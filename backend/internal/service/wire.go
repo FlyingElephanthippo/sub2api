@@ -107,6 +107,37 @@ func ProvideBatchImageCleanupService(repo BatchImageRepository, accountRepo Acco
 	return svc
 }
 
+// 生图页只用到仓储的一小部分读方法，下面三个提供者把宽接口收窄成
+// ImageGenerationService 真正依赖的那几个方法。wire 不会做结构化匹配
+// （宽接口不满足窄接口），所以这里必须显式转换一次。
+
+func ProvideImageGenerationGroupPricingRepository(repo GroupRepository) ImageGenerationGroupPricingRepository {
+	return repo
+}
+
+func ProvideImageGenerationUserGroupRateRepository(repo UserGroupRateRepository) ImageGenerationUserGroupRateRepository {
+	return repo
+}
+
+func ProvideImageGenerationAPIKeyRepository(repo APIKeyRepository) ImageGenerationAPIKeyRepository {
+	return repo
+}
+
+// ProvideImageGenerationService 构造生图页服务并启动保留期清理循环。
+func ProvideImageGenerationService(
+	repo ImageGenerationRepository,
+	apiKeyRepo ImageGenerationAPIKeyRepository,
+	groupRepo ImageGenerationGroupPricingRepository,
+	userGroupRate ImageGenerationUserGroupRateRepository,
+	billing *BillingService,
+	cfg *config.Config,
+	tasks *ImageTaskService,
+) *ImageGenerationService {
+	svc := NewImageGenerationService(repo, apiKeyRepo, groupRepo, userGroupRate, billing, cfg, tasks)
+	svc.Start()
+	return svc
+}
+
 // ProvideOpenAIOAuthService creates OpenAIOAuthService with privacy/account enrichment support.
 func ProvideOpenAIOAuthService(
 	proxyRepo ProxyRepository,
@@ -878,6 +909,10 @@ var ProviderSet = wire.NewSet(
 	NewBatchImageDownloadService,
 	ProvideBatchImageCleanupService,
 	ProvideBatchImageWorkerRuntime,
+	ProvideImageGenerationGroupPricingRepository,
+	ProvideImageGenerationUserGroupRateRepository,
+	ProvideImageGenerationAPIKeyRepository,
+	ProvideImageGenerationService,
 	wire.Bind(new(AccountRuntimeBlocker), new(*OpenAIGatewayService)),
 	NewOAuthService,
 	ProvideClaudeResetCreditService,
