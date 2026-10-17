@@ -316,17 +316,28 @@
               class="group relative overflow-hidden rounded-lg border border-gray-200 dark:border-dark-700"
             >
               <img
-                v-if="item.content_available"
+                v-if="historyThumb(item.id)"
                 :src="historyThumb(item.id)"
                 :alt="item.prompt"
                 class="h-28 w-full object-cover"
+                @error="historyPreviewFailed(item.id)"
               />
               <div v-else class="flex h-28 w-full items-center justify-center bg-gray-100 px-2 text-center text-xs text-gray-400 dark:bg-dark-800">
-                {{ t('imageGen.history.expired') }}
+                <template v-if="!item.content_available">{{ t('imageGen.history.expired') }}</template>
+                <template v-else-if="historyPreviewErrors[item.id]">{{ t('imageGen.history.loadFailed') }}</template>
+                <template v-else>{{ t('common.loading') }}</template>
               </div>
               <div class="flex items-center justify-between gap-1 px-2 py-1 text-xs">
                 <span class="truncate text-gray-500 dark:text-gray-400">{{ item.model }}</span>
                 <div class="flex gap-1 opacity-0 transition group-hover:opacity-100">
+                  <a
+                    v-if="historyThumb(item.id)"
+                    :href="historyThumb(item.id)"
+                    :download="`image-${item.id}`"
+                    class="text-gray-500 hover:text-gray-700"
+                  >
+                    {{ t('imageGen.download') }}
+                  </a>
                   <button type="button" class="text-gray-500 hover:text-gray-700" @click="reuse(item)">
                     {{ t('imageGen.history.reuse') }}
                   </button>
@@ -356,7 +367,6 @@ import {
   estimate as estimateImage,
   fetchHistoryContent,
   getCapabilities,
-  historyContentUrl,
   listHistory,
   type ImageGenerationEstimate,
   type ImageGenerationHistoryItem,
@@ -381,6 +391,7 @@ import {
   type ImageGenRequest,
 } from '@/composables/useImageGeneration'
 import type { ApiKey } from '@/types'
+import { extractApiErrorCode } from '@/utils/apiError'
 
 const props = withDefaults(
   defineProps<{
@@ -454,6 +465,8 @@ const historyEnabled = ref(false)
 const historyRetentionDays = ref(0)
 const history = ref<ImageGenerationHistoryItem[]>([])
 const historyError = ref('')
+const historyPreviewUrls = ref<Record<number, string>>({})
+const historyPreviewErrors = ref<Record<number, boolean>>({})
 const estimate = ref<ImageGenerationEstimate | null>(null)
 const estimating = ref(false)
 const estimateError = ref('')
@@ -461,6 +474,7 @@ const estimateError = ref('')
 let estimateTimer: ReturnType<typeof setTimeout> | undefined
 let estimateController: AbortController | null = null
 let loadToken = 0
+let disposed = false
 
 const provider = computed(() => resolveImageModel(model.value).provider)
 const modelOptions = computed(() =>
@@ -532,7 +546,38 @@ function formatCost(value: number): string {
 }
 
 function historyThumb(id: number): string {
-  return historyContentUrl(id)
+  return historyPreviewUrls.value[id] || ''
+}
+
+function releaseHistoryPreview(id: number): void {
+  const url = historyPreviewUrls.value[id]
+  if (url?.startsWith('blob:')) URL.revokeObjectURL(url)
+  delete historyPreviewUrls.value[id]
+  delete historyPreviewErrors.value[id]
+}
+
+function historyPreviewFailed(id: number): void {
+  releaseHistoryPreview(id)
+  historyPreviewErrors.value[id] = true
+}
+
+function safeHistoryExternalUrl(contentUrl?: string): string {
+  if (!contentUrl) return ''
+  try {
+    const url = new URL(contentUrl)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : ''
+  } catch {
+    return ''
+  }
+}
+
+function historyContentMissing(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const code = extractApiErrorCode(error)
+  const response = error as { status?: number; response?: { status?: number } }
+  // Blob error responses may retain only the HTTP status in the API interceptor.
+  return code === 'IMAGE_GENERATION_HISTORY_NO_CONTENT'
+    || ((response.status ?? response.response?.status) === 404 && (!code || code === '404'))
 }
 
 /* ---------------------------------- 数据加载 -------------------------------- */
@@ -555,13 +600,35 @@ async function loadKeys(): Promise<void> {
 }
 
 async function loadHistory(): Promise<void> {
-  if (!historyEnabled.value) return
+  if (!historyEnabled.value || disposed) return
   historyError.value = ''
   const token = ++loadToken
   try {
     const response = await listHistory(1, 24)
     if (token !== loadToken) return
     history.value = response.items || []
+    const availableIDs = new Set(history.value.filter(item => item.content_available).map(item => item.id))
+    for (const id of Object.keys(historyPreviewUrls.value).map(Number)) {
+      if (!availableIDs.has(id)) releaseHistoryPreview(id)
+    }
+    historyPreviewErrors.value = {}
+    await Promise.all(history.value.filter(item => item.content_available && !historyThumb(item.id)).map(async item => {
+      try {
+        // 面板图片接口需要 JWT，必须通过 apiClient 取回后再交给 img 展示。
+        const blob = await fetchHistoryContent(item.id)
+        if (token !== loadToken || !history.value.some(record => record.id === item.id)) return
+        historyPreviewUrls.value[item.id] = URL.createObjectURL(blob)
+      } catch (error) {
+        if (token !== loadToken || !history.value.some(record => record.id === item.id)) return
+        const externalUrl = historyContentMissing(error) ? safeHistoryExternalUrl(item.content_url) : ''
+        if (externalUrl) {
+          // External images load directly; the panel JWT must never be sent to their host.
+          historyPreviewUrls.value[item.id] = externalUrl
+        } else {
+          historyPreviewErrors.value[item.id] = true
+        }
+      }
+    }))
   } catch {
     if (token !== loadToken) return
     historyError.value = t('imageGen.history.loadFailed')
@@ -858,6 +925,7 @@ async function removeHistory(id: number): Promise<void> {
   try {
     await deleteHistory(id)
     history.value = history.value.filter(item => item.id !== id)
+    releaseHistoryPreview(id)
   } catch {
     appStore.showError(t('imageGen.history.deleteFailed'))
   }
@@ -875,6 +943,9 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  disposed = true
+  loadToken += 1
+  for (const id of Object.keys(historyPreviewUrls.value).map(Number)) releaseHistoryPreview(id)
   if (estimateTimer) clearTimeout(estimateTimer)
   estimateController?.abort()
   cancelGeneration()

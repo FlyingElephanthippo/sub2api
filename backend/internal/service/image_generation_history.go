@@ -38,6 +38,9 @@ type ImageGenerationHistoryRecord struct {
 	Error             string          `json:"error,omitempty"`
 	Archived          bool            `json:"-"`
 	CreatedAt         time.Time       `json:"created_at"`
+
+	// 列表不载入图片字节，由仓储单独查询图片是否存在。
+	StoredContentAvailable bool `json:"-"`
 }
 
 // ContentAvailable 表示这条记录当前能否取回图片：要么内联字节还在，要么有外链。
@@ -48,7 +51,7 @@ func (r *ImageGenerationHistoryRecord) ContentAvailable() bool {
 	if r.Archived {
 		return false
 	}
-	return len(r.Content) > 0 || r.ContentURL != ""
+	return r.StoredContentAvailable || len(r.Content) > 0 || r.ContentURL != ""
 }
 
 // ImageGenerationHistoryCreate 是归档一条记录的入参。

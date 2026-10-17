@@ -25,7 +25,8 @@ func NewImageGenerationRepository(sqlDB *sql.DB) service.ImageGenerationReposito
 const imageGenerationHistoryColumns = `
 	id, user_id, COALESCE(task_id, ''), api_key_id, model, provider, prompt,
 	normalized_params, reference_snapshot, content_type, size_bytes, content_url,
-	storage_object_id, library_asset_id, status, error, archived_at IS NOT NULL, created_at`
+	storage_object_id, library_asset_id, status, error, archived_at IS NOT NULL, created_at,
+	COALESCE(octet_length(content), 0) > 0`
 
 // historyScanDest 返回与 imageGenerationHistoryColumns 对齐的扫描目标。
 // 传 withContent 时末尾追加 content 列。
@@ -41,6 +42,7 @@ func historyScanDest(rec *service.ImageGenerationHistoryRecord, withContent bool
 		&rec.ID, &rec.UserID, &rec.TaskID, &apiKeyID, &rec.Model, &rec.Provider, &rec.Prompt,
 		&params, &snapshot, &rec.ContentType, &rec.SizeBytes, &rec.ContentURL,
 		&rec.StorageObjectID, &rec.LibraryAssetID, &rec.Status, &rec.Error, &rec.Archived, &createdAt,
+		&rec.StoredContentAvailable,
 	}
 	if withContent {
 		dest = append(dest, &content)

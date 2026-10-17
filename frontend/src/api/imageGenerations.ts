@@ -150,11 +150,7 @@ export async function deleteHistory(id: number): Promise<void> {
   await apiClient.delete(`/image-generations/history/${id}`)
 }
 
-/** 图片字节的直链。走 fetch 而非 <img src>，因为需要带 Authorization 头。 */
-export function historyContentUrl(id: number): string {
-  return `/image-generations/history/${id}/content`
-}
-
+/** 面板图片需要 JWT，取回后使用临时 Blob URL 展示。 */
 export async function fetchHistoryContent(id: number): Promise<Blob> {
   const { data } = await apiClient.get<Blob>(`/image-generations/history/${id}/content`, {
     responseType: 'blob',
