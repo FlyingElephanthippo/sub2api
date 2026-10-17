@@ -39,6 +39,19 @@ func (s *imageTaskMemoryStore) Get(_ context.Context, _ string) (*ImageTaskRecor
 	return &copy, nil
 }
 
+// List 这个 fake 只保存单个任务，所以索引里最多一条。
+// 归属不匹配时返回空列表，与 Redis 实现按 API Key 建索引的行为一致。
+func (s *imageTaskMemoryStore) List(_ context.Context, owner ImageTaskOwner, _ int) ([]*ImageTaskRecord, error) {
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
+	if s.task == nil || s.task.UserID != owner.UserID || s.task.APIKeyID != owner.APIKeyID {
+		return nil, nil
+	}
+	copy := *s.task
+	return []*ImageTaskRecord{&copy}, nil
+}
+
 func TestImageTaskServiceLifecycleAndOwnership(t *testing.T) {
 	store := &imageTaskMemoryStore{}
 	svc := NewImageTaskServiceWithOptions(store, time.Hour, 10*time.Minute)

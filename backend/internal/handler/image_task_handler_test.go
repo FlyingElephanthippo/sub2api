@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -42,6 +43,27 @@ func (s *asyncImageMemoryStore) Get(_ context.Context, id string) (*service.Imag
 	copy.Result = append(json.RawMessage(nil), task.Result...)
 	copy.Error = append(json.RawMessage(nil), task.Error...)
 	return &copy, nil
+}
+
+// List 按归属过滤后再按创建时间倒序，模拟 Redis 索引的返回顺序。
+func (s *asyncImageMemoryStore) List(_ context.Context, owner service.ImageTaskOwner, limit int) ([]*service.ImageTaskRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	matched := make([]*service.ImageTaskRecord, 0, len(s.tasks))
+	for _, task := range s.tasks {
+		if task.UserID != owner.UserID || task.APIKeyID != owner.APIKeyID {
+			continue
+		}
+		copy := *task
+		copy.Result = append(json.RawMessage(nil), task.Result...)
+		copy.Error = append(json.RawMessage(nil), task.Error...)
+		matched = append(matched, &copy)
+	}
+	sort.Slice(matched, func(i, j int) bool { return matched[i].CreatedAt > matched[j].CreatedAt })
+	if limit > 0 && len(matched) > limit {
+		matched = matched[:limit]
+	}
+	return matched, nil
 }
 
 func TestAsyncImageHandlerSubmitAndPoll(t *testing.T) {

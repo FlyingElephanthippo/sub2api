@@ -67,6 +67,9 @@ type ImageTaskOwner struct {
 type ImageTaskStore interface {
 	Save(ctx context.Context, task *ImageTaskRecord, ttl time.Duration) error
 	Get(ctx context.Context, id string) (*ImageTaskRecord, error)
+	// List 返回某个 API Key 最近创建的任务（最新在前）。实现方维护一个按
+	// 创建时间排序的索引，因为任务本体是按 id 存的散列，无法直接范围扫描。
+	List(ctx context.Context, owner ImageTaskOwner, limit int) ([]*ImageTaskRecord, error)
 }
 
 // ImageStorageResolver reports the currently effective object-storage binding.
@@ -185,6 +188,30 @@ func (s *ImageTaskService) Get(ctx context.Context, owner ImageTaskOwner, id str
 		return nil, ErrImageTaskNotFound
 	}
 	return imageTaskToPublic(task), nil
+}
+
+// List 列出某个 API Key 最近的任务，最新在前。
+// 与 Get 不同，这里不按 user 二次过滤：索引本身就以 API Key 为维度建立，
+// 归属校验在生成索引键之前完成。
+func (s *ImageTaskService) List(ctx context.Context, owner ImageTaskOwner, limit int) ([]*ImageTask, error) {
+	if s == nil || s.store == nil {
+		return nil, ErrImageTaskUnavailable
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	records, err := s.store.List(ctx, owner, limit)
+	if err != nil {
+		return nil, ErrImageTaskUnavailable.WithCause(err)
+	}
+	tasks := make([]*ImageTask, 0, len(records))
+	for _, record := range records {
+		if record == nil || record.UserID != owner.UserID || record.APIKeyID != owner.APIKeyID {
+			continue
+		}
+		tasks = append(tasks, imageTaskToPublic(record))
+	}
+	return tasks, nil
 }
 
 func (s *ImageTaskService) Complete(ctx context.Context, id string, statusCode int, result json.RawMessage) error {
