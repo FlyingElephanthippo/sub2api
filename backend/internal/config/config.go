@@ -104,6 +104,7 @@ type Config struct {
 	Update                  UpdateConfig                  `mapstructure:"update"`
 	Idempotency             IdempotencyConfig             `mapstructure:"idempotency"`
 	BatchImage              BatchImageConfig              `mapstructure:"batch_image"`
+	ImageHistory            ImageHistoryConfig            `mapstructure:"image_history"`
 	ImageStorage            ImageStorageConfig            `mapstructure:"image_storage"`
 	Plugins                 PluginConfig                  `mapstructure:"plugins"`
 
@@ -255,6 +256,16 @@ type BatchImageConfig struct {
 	VertexOutputRetentionHours   int    `mapstructure:"vertex_output_retention_hours"`
 	VertexBatchPredictionBaseURL string `mapstructure:"vertex_batch_prediction_base_url"`
 	VertexGCSBaseURL             string `mapstructure:"vertex_gcs_base_url"`
+}
+
+// ImageHistoryConfig 配置生图页历史归档：图片字节直接写在 Postgres 行里，
+// 按创建时间到期后由清理任务删除。RetentionDays 通过 /image-generations/capabilities
+// 下发给前端展示，两边必须一致，否则用户会看到早已被删掉的记录。
+type ImageHistoryConfig struct {
+	Enabled                bool `mapstructure:"enabled"`
+	RetentionDays          int  `mapstructure:"retention_days"`
+	CleanupIntervalMinutes int  `mapstructure:"cleanup_interval_minutes"`
+	CleanupBatchSize       int  `mapstructure:"cleanup_batch_size"`
 }
 
 // ImageStorageConfig 配置异步图片任务结果上传的 S3 兼容对象存储。
@@ -2255,6 +2266,13 @@ func setDefaults() {
 	viper.SetDefault("batch_image.output_retention_max_days", 7)
 	viper.SetDefault("batch_image.cleanup_interval_minutes", 30)
 	viper.SetDefault("batch_image.cleanup_batch_size", 100)
+
+	// Image history
+	viper.SetDefault("image_history.enabled", true)
+	viper.SetDefault("image_history.retention_days", 90)
+	viper.SetDefault("image_history.cleanup_interval_minutes", 60)
+	viper.SetDefault("image_history.cleanup_batch_size", 500)
+
 	viper.SetDefault("batch_image.queue_enabled", false)
 	viper.SetDefault("batch_image.queue_ready_key", "batch_image:queue:ready")
 	viper.SetDefault("batch_image.queue_delayed_key", "batch_image:queue:delayed")
@@ -3200,6 +3218,14 @@ func (c *Config) Validate() error {
 		}
 		if c.BatchImage.VertexOutputRetentionHours <= 0 {
 			return fmt.Errorf("batch_image.vertex_output_retention_hours must be positive")
+		}
+	}
+	if c.ImageHistory.Enabled {
+		if c.ImageHistory.RetentionDays <= 0 {
+			return fmt.Errorf("image_history.retention_days must be positive when image history is enabled")
+		}
+		if c.ImageHistory.CleanupBatchSize <= 0 {
+			return fmt.Errorf("image_history.cleanup_batch_size must be positive when image history is enabled")
 		}
 	}
 	if c.Dashboard.Enabled {
