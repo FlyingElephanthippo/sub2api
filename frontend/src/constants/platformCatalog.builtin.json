@@ -278,6 +278,18 @@
           }
         ]
       }
+    },
+    {
+      "id": "aggregate_w",
+      "display_name": "Aggregate W",
+      "gateway": "openai",
+      "cn_provider": false
+    },
+    {
+      "id": "jimeng_intl",
+      "display_name": "Jimeng Intl",
+      "gateway": "openai",
+      "cn_provider": false
     }
   ],
   "composite_precedence": [
@@ -293,6 +305,8 @@
     "opencode_go",
     "typesafe",
     "command_code",
-    "cline"
+    "cline",
+    "aggregate_w",
+    "jimeng_intl"
   ]
 }

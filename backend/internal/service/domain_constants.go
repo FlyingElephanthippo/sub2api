@@ -52,7 +52,10 @@ const (
 	PlatformTypeSafe    = domain.PlatformTypeSafe
 	PlatformCommandCode = domain.PlatformCommandCode
 	PlatformCline       = domain.PlatformCline
-	PlatformComposite   = domain.PlatformComposite
+	// 私有生图渠道：只走 OpenAI 网关的 Images 异步任务。
+	PlatformAggregateW = domain.PlatformAggregateW
+	PlatformJimengIntl = domain.PlatformJimengIntl
+	PlatformComposite  = domain.PlatformComposite
 	// PlatformKiro is retained for unsupported-platform threshold tests and legacy
 	// account rows. Scheduling-threshold evaluation never pauses kiro accounts.
 	PlatformKiro = "kiro"

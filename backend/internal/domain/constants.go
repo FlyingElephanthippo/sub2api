@@ -37,8 +37,14 @@ const (
 	PlatformCommandCode = "command_code"
 	// PlatformCline 是 Cline API（多模型聚合，OpenAI 兼容 Chat Completions；按量积分计费，
 	// 另有 ClinePass 订阅）。
-	PlatformCline     = "cline"
-	PlatformComposite = "composite"
+	PlatformCline = "cline"
+	// PlatformJimengIntl 是即梦国际站画布渠道（内部私有渠道，模型前缀 dreamina-）。
+	// 只承载生图，经 OpenAI 网关的 Images 异步任务转发。
+	PlatformJimengIntl = "jimeng_intl"
+	// PlatformAggregateW 是聚合渠道 W（内部私有渠道，模型前缀 w-）。
+	// 只承载生图，经 OpenAI 网关的 Images 异步任务转发。
+	PlatformAggregateW = "aggregate_w"
+	PlatformComposite  = "composite"
 )
 
 // Account mode constants 区分国产供应商的「按量付费（余额）」与「Coding Plan」两种接入方式。

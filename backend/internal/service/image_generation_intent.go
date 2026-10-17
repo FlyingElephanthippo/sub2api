@@ -36,6 +36,17 @@ func GroupAllowsImageGeneration(group *Group) bool {
 	return group == nil || group.AllowImageGeneration
 }
 
+// PlatformSupportsAsyncImages 报告平台是否可提交 Images 异步任务。除 OpenAI / Grok 外，
+// 两个私有生图渠道（聚合渠道 W、即梦国际站画布）同样只走 Images 协议，因此一并放通。
+func PlatformSupportsAsyncImages(platform string) bool {
+	switch platform {
+	case PlatformOpenAI, PlatformGrok, PlatformAggregateW, PlatformJimengIntl:
+		return true
+	default:
+		return false
+	}
+}
+
 // IsImageGenerationIntent classifies requests that can produce generated images.
 func IsImageGenerationIntent(endpoint string, requestedModel string, body []byte) bool {
 	if IsImageGenerationEndpoint(endpoint) {
