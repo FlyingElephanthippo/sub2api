@@ -19,6 +19,9 @@ vi.mock('@/api/imageGenerations', () => ({
   deleteHistory,
 }))
 vi.mock('@/api/keys', () => ({ keysAPI: { list: vi.fn().mockResolvedValue({ items: [] }) } }))
+vi.mock('@/components/layout/AppLayout.vue', () => ({
+  default: { template: '<main><slot /></main>' },
+}))
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({ showError: vi.fn(), showSuccess: vi.fn(), showWarning: vi.fn() }),
 }))

@@ -1,349 +1,351 @@
 <template>
-  <div class="mx-auto max-w-7xl space-y-6">
-    <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-      <div>
-        <h1 class="text-2xl font-bold text-gray-900 dark:text-white">{{ pageTitle }}</h1>
-        <p v-if="historyRetentionDays" class="mt-2 flex gap-4 text-sm text-gray-500 dark:text-gray-400">
-          <span>{{ t('imageGen.history.retention', { days: historyRetentionDays }) }}</span>
-        </p>
+  <AppLayout>
+    <div class="mx-auto max-w-7xl space-y-6">
+      <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 class="text-2xl font-bold text-gray-900 dark:text-white">{{ pageTitle }}</h1>
+          <p v-if="historyRetentionDays" class="mt-2 flex gap-4 text-sm text-gray-500 dark:text-gray-400">
+            <span>{{ t('imageGen.history.retention', { days: historyRetentionDays }) }}</span>
+          </p>
+        </div>
+        <div class="flex min-w-0 flex-wrap items-center gap-2">
+          <label class="input-label whitespace-nowrap text-sm">{{ t('imageGen.apiKey') }}</label>
+          <Select v-model="selectedKeyID" :options="keyOptions" class="min-w-[14rem]">
+            <option value="" disabled>{{ t('imageGen.selectKey') }}</option>
+          </Select>
+        </div>
       </div>
-      <div class="flex min-w-0 flex-wrap items-center gap-2">
-        <label class="input-label whitespace-nowrap text-sm">{{ t('imageGen.apiKey') }}</label>
-        <Select v-model="selectedKeyID" :options="keyOptions" class="min-w-[14rem]">
-          <option value="" disabled>{{ t('imageGen.selectKey') }}</option>
-        </Select>
+
+      <div class="flex gap-1 rounded-xl bg-gray-100 p-1 dark:bg-dark-800">
+        <button
+          v-for="tabItem in tabs"
+          :key="tabItem.value"
+          type="button"
+          class="flex-1 rounded-lg px-4 py-2 text-sm font-medium transition"
+          :class="
+            activeTab === tabItem.value
+              ? 'bg-white text-gray-900 shadow-sm dark:bg-dark-700 dark:text-white'
+              : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
+          "
+          @click="switchTab(tabItem.value)"
+        >
+          {{ t(tabItem.label) }}
+        </button>
       </div>
-    </div>
 
-    <div class="flex gap-1 rounded-xl bg-gray-100 p-1 dark:bg-dark-800">
-      <button
-        v-for="tabItem in tabs"
-        :key="tabItem.value"
-        type="button"
-        class="flex-1 rounded-lg px-4 py-2 text-sm font-medium transition"
-        :class="
-          activeTab === tabItem.value
-            ? 'bg-white text-gray-900 shadow-sm dark:bg-dark-700 dark:text-white'
-            : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
-        "
-        @click="switchTab(tabItem.value)"
-      >
-        {{ t(tabItem.label) }}
-      </button>
-    </div>
-
-    <div class="grid grid-cols-1 gap-6 lg:grid-cols-5">
-      <div class="lg:col-span-2">
-        <div class="card space-y-4 p-5">
-          <div>
-            <label class="input-label">{{ t('imageGen.model') }}</label>
-            <Select v-model="model" :options="modelOptions" />
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              {{ t('imageGen.referenceLimit', { count: maxReferences }) }}
-            </p>
-          </div>
-
-          <div>
-            <label class="input-label">{{ activeTab === 'batch' ? t('imageGen.batchCount') : t('imageGen.prompt') }}</label>
-            <textarea
-              v-if="activeTab !== 'batch'"
-              ref="promptRef"
-              v-model="prompt"
-              rows="5"
-              class="input"
-              :placeholder="t('imageGen.promptPlaceholder')"
-            />
-            <textarea
-              v-else
-              v-model="batchPromptsText"
-              rows="7"
-              class="input"
-              :placeholder="t('imageGen.promptPlaceholder')"
-            />
-            <p class="input-hint mt-1">
-              {{ activeTab === 'batch' ? t('imageGen.batchTextModeHint') : t('imageGen.privacyNotice') }}
-            </p>
-          </div>
-
-          <div v-if="activeTab === 'batch'" class="space-y-3">
-            <div class="flex items-center justify-between gap-3">
-              <label class="input-label mb-0">{{ t('imageGen.batchCount') }}</label>
-              <span class="text-xs text-gray-500 dark:text-gray-400">
-                {{ t('imageGen.batchCountHint', { count: batchPromptCount }) }}
-              </span>
+      <div class="grid grid-cols-1 gap-6 lg:grid-cols-5">
+        <div class="lg:col-span-2">
+          <div class="card space-y-4 p-5">
+            <div>
+              <label class="input-label">{{ t('imageGen.model') }}</label>
+              <Select v-model="model" :options="modelOptions" />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('imageGen.referenceLimit', { count: maxReferences }) }}
+              </p>
             </div>
-            <div class="flex items-center justify-between gap-3">
-              <label class="input-label mb-0">{{ t('imageGen.batchStatus') }}</label>
-              <span class="text-sm text-gray-500 dark:text-gray-400">
-                {{ batchProgressLabel }}
-              </span>
-            </div>
-          </div>
 
-          <div v-if="supportsReferences" class="space-y-3">
-            <div class="flex items-center justify-between gap-3">
-              <label class="input-label mb-0">{{ t('imageGen.referenceImages') }}</label>
-              <span class="text-xs text-gray-500 dark:text-gray-400">
-                {{ references.length }} / {{ maxReferences }}
-              </span>
-            </div>
-            <label
-              class="flex cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-gray-300 px-4 py-6 text-sm text-gray-500 transition hover:border-primary-400 dark:border-dark-600 dark:text-gray-400"
-            >
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                class="hidden"
-                :disabled="!canAddReference"
-                multiple
-                @change="onReferenceSelected"
+            <div>
+              <label class="input-label">{{ activeTab === 'batch' ? t('imageGen.batchCount') : t('imageGen.prompt') }}</label>
+              <textarea
+                v-if="activeTab !== 'batch'"
+                ref="promptRef"
+                v-model="prompt"
+                rows="5"
+                class="input"
+                :placeholder="t('imageGen.promptPlaceholder')"
               />
-              <span>{{ t('imageGen.addReference') }}</span>
-              <span class="mt-1 text-xs">{{ t('imageGen.referenceHint', { size: referenceMaxMB }) }}</span>
-            </label>
+              <textarea
+                v-else
+                v-model="batchPromptsText"
+                rows="7"
+                class="input"
+                :placeholder="t('imageGen.promptPlaceholder')"
+              />
+              <p class="input-hint mt-1">
+                {{ activeTab === 'batch' ? t('imageGen.batchTextModeHint') : t('imageGen.privacyNotice') }}
+              </p>
+            </div>
 
-            <div v-if="references.length" class="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <div
-                v-for="reference in references"
-                :key="reference.id"
-                class="group relative overflow-hidden rounded-lg border border-gray-200 dark:border-dark-700"
-              >
-                <img :src="reference.previewUrl" :alt="reference.name" class="h-24 w-full object-cover" />
-                <span
-                  class="absolute left-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-xs font-medium text-white"
-                >
-                  {{ reference.index }}
+            <div v-if="activeTab === 'batch'" class="space-y-3">
+              <div class="flex items-center justify-between gap-3">
+                <label class="input-label mb-0">{{ t('imageGen.batchCount') }}</label>
+                <span class="text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('imageGen.batchCountHint', { count: batchPromptCount }) }}
                 </span>
-                <button
-                  type="button"
-                  :title="t('imageGen.removeReference')"
-                  class="absolute right-1 top-1 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white opacity-0 transition group-hover:opacity-100"
-                  @click="removeReference(reference.id)"
-                >
-                  ×
-                </button>
-                <div class="flex items-center justify-between gap-1 px-2 py-1 text-xs">
-                  <span class="truncate text-gray-500 dark:text-gray-400">{{ reference.name }}</span>
-                  <span v-if="reference.uploadStatus !== 'ready'" class="text-gray-400">
-                    {{ t(`imageGen.referenceStatus.${reference.uploadStatus}`) }}
-                  </span>
-                </div>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <label class="input-label mb-0">{{ t('imageGen.batchStatus') }}</label>
+                <span class="text-sm text-gray-500 dark:text-gray-400">
+                  {{ batchProgressLabel }}
+                </span>
               </div>
             </div>
 
-            <button
-              v-if="references.length"
-              type="button"
-              class="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400"
-              @click="clearReferences"
-            >
-              {{ t('imageGen.clearReferences') }}
-            </button>
-          </div>
-
-          <div v-if="usesFixedSize" class="grid grid-cols-2 gap-3">
-            <div>
-              <label class="input-label">{{ t('imageGen.size') }}</label>
-              <Select v-model="size" :options="sizeOptions" />
-            </div>
-            <div v-if="size === 'custom'" class="grid grid-cols-2 gap-2">
-              <div>
-                <label class="input-label">{{ t('imageGen.customSize') }}</label>
-                <input v-model.number="customWidth" type="number" min="256" max="3840" class="input" />
+            <div v-if="supportsReferences" class="space-y-3">
+              <div class="flex items-center justify-between gap-3">
+                <label class="input-label mb-0">{{ t('imageGen.referenceImages') }}</label>
+                <span class="text-xs text-gray-500 dark:text-gray-400">
+                  {{ references.length }} / {{ maxReferences }}
+                </span>
               </div>
-              <div>
-                <label class="input-label">&nbsp;</label>
-                <input v-model.number="customHeight" type="number" min="256" max="3840" class="input" />
-              </div>
-            </div>
-          </div>
-
-          <div v-if="supportsAspectRatio" class="grid grid-cols-2 gap-3">
-            <div>
-              <label class="input-label">{{ t('imageGen.aspectRatio') }}</label>
-              <Select v-model="aspectRatio" :options="aspectRatioOptions" />
-            </div>
-            <div>
-              <label class="input-label">{{ t('imageGen.imageSize') }}</label>
-              <Select v-model="imageSize" :options="imageSizeOptions" />
-            </div>
-          </div>
-
-          <div v-if="supportsOutputFormat" class="grid grid-cols-2 gap-3">
-            <div>
-              <label class="input-label">{{ t('imageGen.quality') }}</label>
-              <Select v-model="quality" :options="qualityOptions" />
-            </div>
-            <div>
-              <label class="input-label">{{ t('imageGen.format') }}</label>
-              <Select v-model="outputFormat" :options="formatOptions" />
-            </div>
-            <div class="col-span-2">
-              <label class="input-label">{{ t('imageGen.background') }}</label>
-              <Select v-model="background" :options="backgroundOptions" />
-            </div>
-            <div v-if="outputFormat !== 'png'" class="col-span-2">
-              <label class="input-label">{{ t('imageGen.compression') }}: {{ outputCompression }}</label>
-              <input v-model.number="outputCompression" type="range" min="1" max="100" class="w-full" />
-            </div>
-          </div>
-
-          <p v-if="sizeError" class="text-sm text-red-600 dark:text-red-400">
-            {{ t(sizeError, { min: sizeLimits.minEdge, max: sizeLimits.maxEdge }) }}
-          </p>
-          <p v-else-if="estimateError" class="text-sm text-amber-600 dark:text-amber-400">
-            {{ estimateError }}
-          </p>
-
-          <div v-if="estimate" class="rounded-lg border border-primary-200 bg-primary-50/60 px-3 py-2 text-xs dark:border-primary-900/60 dark:bg-primary-950/30">
-            <div class="flex items-center justify-between">
-              <span>{{ t('imageGen.estimateDetails') }}</span>
-              <span class="font-medium">{{ formatCost(estimate.estimated_cost) }}</span>
-            </div>
-            <div class="mt-1 flex items-center justify-between text-gray-500 dark:text-gray-400">
-              <span>{{ estimate.image_count }} × {{ formatCost(estimate.unit_cost) }}</span>
-              <span>{{ estimate.billing_tier }} · ×{{ estimate.rate_multiplier }}</span>
-            </div>
-          </div>
-          <p v-else-if="estimating" class="text-xs text-gray-500 dark:text-gray-400">
-            {{ t('imageGen.estimating') }}
-          </p>
-
-          <div class="flex flex-wrap gap-2">
-            <button
-              v-if="activeTab === 'batch'"
-              type="button"
-              class="btn btn-primary flex-1"
-              :disabled="!canSubmit"
-              @click="submitBatch"
-            >
-              {{ t('imageGen.batchGenerate') }}
-            </button>
-            <button v-else type="button" class="btn btn-primary flex-1" :disabled="!canSubmit" @click="submit">
-              {{ references.length ? t('imageGen.generateEdit') : t('imageGen.generate') }}
-            </button>
-            <button
-              v-if="status === 'generating'"
-              type="button"
-              class="btn btn-secondary"
-              @click="cancelGeneration"
-            >
-              {{ t('imageGen.cancel') }}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div class="lg:col-span-3">
-        <div v-if="activeTab === 'batch'" class="space-y-4">
-          <EmptyState
-            v-if="!batchItems.length"
-            :title="t('imageGen.emptyState')"
-            :description="t('imageGen.batchTextModeHint')"
-          />
-          <div
-            v-for="(item, index) in batchItems"
-            :key="index"
-            class="card flex gap-4 p-4"
-          >
-            <img
-              v-if="item.result"
-              :src="item.result.blobUrl"
-              :alt="item.prompt"
-              class="h-24 w-24 rounded-lg object-cover"
-            />
-            <div v-else class="flex h-24 w-24 items-center justify-center rounded-lg bg-gray-100 text-xs text-gray-400 dark:bg-dark-800">
-              <span v-if="item.status === 'generating'">{{ t('imageGen.status.generating') }}</span>
-              <span v-else-if="item.status === 'error'">{{ t('imageGen.referenceStatus.failed') }}</span>
-              <span v-else>{{ t('imageGen.pending') }}</span>
-            </div>
-            <div class="min-w-0 flex-1 space-y-2">
-              <p class="line-clamp-3 text-sm text-gray-700 dark:text-gray-300">{{ item.prompt }}</p>
-              <p v-if="item.error" class="text-xs text-red-600 dark:text-red-400">{{ item.error }}</p>
-              <div v-if="item.result" class="flex gap-2">
-                <button type="button" class="btn btn-secondary btn-sm" @click="download(item.result)">
-                  {{ t('imageGen.download') }}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div v-else class="space-y-4">
-          <div v-if="currentResult" class="card space-y-3 p-4">
-            <img :src="currentResult.blobUrl" :alt="currentResult.prompt" class="w-full rounded-lg" />
-            <div class="flex flex-wrap gap-2">
-              <button type="button" class="btn btn-primary btn-sm" @click="download(currentResult)">
-                {{ t('imageGen.download') }}
-              </button>
-              <button type="button" class="btn btn-secondary btn-sm" @click="clearResult">
-                {{ t('imageGen.clear') }}
-              </button>
-              <button
-                v-if="!currentResult.serverArchived"
-                type="button"
-                class="btn btn-secondary btn-sm"
-                @click="archiveResults([currentResult])"
+              <label
+                class="flex cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-gray-300 px-4 py-6 text-sm text-gray-500 transition hover:border-primary-400 dark:border-dark-600 dark:text-gray-400"
               >
-                {{ t('imageGen.longStorage') }}
-              </button>
-            </div>
-          </div>
-          <EmptyState v-else-if="status !== 'generating'" :title="t('imageGen.emptyState')" />
-          <div v-else class="card flex items-center justify-center gap-3 p-10 text-sm text-gray-500 dark:text-gray-400">
-            <LoadingSpinner />
-            <span>{{ progressLabel }}</span>
-          </div>
-        </div>
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  class="hidden"
+                  :disabled="!canAddReference"
+                  multiple
+                  @change="onReferenceSelected"
+                />
+                <span>{{ t('imageGen.addReference') }}</span>
+                <span class="mt-1 text-xs">{{ t('imageGen.referenceHint', { size: referenceMaxMB }) }}</span>
+              </label>
 
-        <div v-if="historyEnabled" class="card mt-6 space-y-4 p-5">
-          <div class="flex items-center justify-between">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
-              {{ t('imageGen.history.title') }}
-            </h2>
-            <button type="button" class="btn btn-secondary btn-sm" @click="loadHistory">
-              {{ t('imageGen.history.reload') }}
-            </button>
-          </div>
-          <p v-if="historyError" class="text-sm text-red-600 dark:text-red-400">{{ historyError }}</p>
-          <p v-else-if="!history.length" class="text-sm text-gray-500 dark:text-gray-400">
-            {{ t('imageGen.history.empty') }}
-          </p>
-          <div v-else class="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <div
-              v-for="item in history"
-              :key="item.id"
-              class="group relative overflow-hidden rounded-lg border border-gray-200 dark:border-dark-700"
-            >
-              <img
-                v-if="historyThumb(item.id)"
-                :src="historyThumb(item.id)"
-                :alt="item.prompt"
-                class="h-28 w-full object-cover"
-                @error="historyPreviewFailed(item.id)"
-              />
-              <div v-else class="flex h-28 w-full items-center justify-center bg-gray-100 px-2 text-center text-xs text-gray-400 dark:bg-dark-800">
-                <template v-if="!item.content_available">{{ t('imageGen.history.expired') }}</template>
-                <template v-else-if="historyPreviewErrors[item.id]">{{ t('imageGen.history.loadFailed') }}</template>
-                <template v-else>{{ t('common.loading') }}</template>
-              </div>
-              <div class="flex items-center justify-between gap-1 px-2 py-1 text-xs">
-                <span class="truncate text-gray-500 dark:text-gray-400">{{ item.model }}</span>
-                <div class="flex gap-1 opacity-0 transition group-hover:opacity-100">
-                  <a
-                    v-if="historyThumb(item.id)"
-                    :href="historyThumb(item.id)"
-                    :download="`image-${item.id}`"
-                    class="text-gray-500 hover:text-gray-700"
+              <div v-if="references.length" class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <div
+                  v-for="reference in references"
+                  :key="reference.id"
+                  class="group relative overflow-hidden rounded-lg border border-gray-200 dark:border-dark-700"
+                >
+                  <img :src="reference.previewUrl" :alt="reference.name" class="h-24 w-full object-cover" />
+                  <span
+                    class="absolute left-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-xs font-medium text-white"
                   >
-                    {{ t('imageGen.download') }}
-                  </a>
-                  <button type="button" class="text-gray-500 hover:text-gray-700" @click="reuse(item)">
-                    {{ t('imageGen.history.reuse') }}
-                  </button>
-                  <button type="button" class="text-red-500 hover:text-red-600" @click="removeHistory(item.id)">
+                    {{ reference.index }}
+                  </span>
+                  <button
+                    type="button"
+                    :title="t('imageGen.removeReference')"
+                    class="absolute right-1 top-1 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white opacity-0 transition group-hover:opacity-100"
+                    @click="removeReference(reference.id)"
+                  >
                     ×
                   </button>
+                  <div class="flex items-center justify-between gap-1 px-2 py-1 text-xs">
+                    <span class="truncate text-gray-500 dark:text-gray-400">{{ reference.name }}</span>
+                    <span v-if="reference.uploadStatus !== 'ready'" class="text-gray-400">
+                      {{ t(`imageGen.referenceStatus.${reference.uploadStatus}`) }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                v-if="references.length"
+                type="button"
+                class="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400"
+                @click="clearReferences"
+              >
+                {{ t('imageGen.clearReferences') }}
+              </button>
+            </div>
+
+            <div v-if="usesFixedSize" class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="input-label">{{ t('imageGen.size') }}</label>
+                <Select v-model="size" :options="sizeOptions" />
+              </div>
+              <div v-if="size === 'custom'" class="grid grid-cols-2 gap-2">
+                <div>
+                  <label class="input-label">{{ t('imageGen.customSize') }}</label>
+                  <input v-model.number="customWidth" type="number" min="256" max="3840" class="input" />
+                </div>
+                <div>
+                  <label class="input-label">&nbsp;</label>
+                  <input v-model.number="customHeight" type="number" min="256" max="3840" class="input" />
+                </div>
+              </div>
+            </div>
+
+            <div v-if="supportsAspectRatio" class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="input-label">{{ t('imageGen.aspectRatio') }}</label>
+                <Select v-model="aspectRatio" :options="aspectRatioOptions" />
+              </div>
+              <div>
+                <label class="input-label">{{ t('imageGen.imageSize') }}</label>
+                <Select v-model="imageSize" :options="imageSizeOptions" />
+              </div>
+            </div>
+
+            <div v-if="supportsOutputFormat" class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="input-label">{{ t('imageGen.quality') }}</label>
+                <Select v-model="quality" :options="qualityOptions" />
+              </div>
+              <div>
+                <label class="input-label">{{ t('imageGen.format') }}</label>
+                <Select v-model="outputFormat" :options="formatOptions" />
+              </div>
+              <div class="col-span-2">
+                <label class="input-label">{{ t('imageGen.background') }}</label>
+                <Select v-model="background" :options="backgroundOptions" />
+              </div>
+              <div v-if="outputFormat !== 'png'" class="col-span-2">
+                <label class="input-label">{{ t('imageGen.compression') }}: {{ outputCompression }}</label>
+                <input v-model.number="outputCompression" type="range" min="1" max="100" class="w-full" />
+              </div>
+            </div>
+
+            <p v-if="sizeError" class="text-sm text-red-600 dark:text-red-400">
+              {{ t(sizeError, { min: sizeLimits.minEdge, max: sizeLimits.maxEdge }) }}
+            </p>
+            <p v-else-if="estimateError" class="text-sm text-amber-600 dark:text-amber-400">
+              {{ estimateError }}
+            </p>
+
+            <div v-if="estimate" class="rounded-lg border border-primary-200 bg-primary-50/60 px-3 py-2 text-xs dark:border-primary-900/60 dark:bg-primary-950/30">
+              <div class="flex items-center justify-between">
+                <span>{{ t('imageGen.estimateDetails') }}</span>
+                <span class="font-medium">{{ formatCost(estimate.estimated_cost) }}</span>
+              </div>
+              <div class="mt-1 flex items-center justify-between text-gray-500 dark:text-gray-400">
+                <span>{{ estimate.image_count }} × {{ formatCost(estimate.unit_cost) }}</span>
+                <span>{{ estimate.billing_tier }} · ×{{ estimate.rate_multiplier }}</span>
+              </div>
+            </div>
+            <p v-else-if="estimating" class="text-xs text-gray-500 dark:text-gray-400">
+              {{ t('imageGen.estimating') }}
+            </p>
+
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-if="activeTab === 'batch'"
+                type="button"
+                class="btn btn-primary flex-1"
+                :disabled="!canSubmit"
+                @click="submitBatch"
+              >
+                {{ t('imageGen.batchGenerate') }}
+              </button>
+              <button v-else type="button" class="btn btn-primary flex-1" :disabled="!canSubmit" @click="submit">
+                {{ references.length ? t('imageGen.generateEdit') : t('imageGen.generate') }}
+              </button>
+              <button
+                v-if="status === 'generating'"
+                type="button"
+                class="btn btn-secondary"
+                @click="cancelGeneration"
+              >
+                {{ t('imageGen.cancel') }}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="lg:col-span-3">
+          <div v-if="activeTab === 'batch'" class="space-y-4">
+            <EmptyState
+              v-if="!batchItems.length"
+              :title="t('imageGen.emptyState')"
+              :description="t('imageGen.batchTextModeHint')"
+            />
+            <div
+              v-for="(item, index) in batchItems"
+              :key="index"
+              class="card flex gap-4 p-4"
+            >
+              <img
+                v-if="item.result"
+                :src="item.result.blobUrl"
+                :alt="item.prompt"
+                class="h-24 w-24 rounded-lg object-cover"
+              />
+              <div v-else class="flex h-24 w-24 items-center justify-center rounded-lg bg-gray-100 text-xs text-gray-400 dark:bg-dark-800">
+                <span v-if="item.status === 'generating'">{{ t('imageGen.status.generating') }}</span>
+                <span v-else-if="item.status === 'error'">{{ t('imageGen.referenceStatus.failed') }}</span>
+                <span v-else>{{ t('imageGen.pending') }}</span>
+              </div>
+              <div class="min-w-0 flex-1 space-y-2">
+                <p class="line-clamp-3 text-sm text-gray-700 dark:text-gray-300">{{ item.prompt }}</p>
+                <p v-if="item.error" class="text-xs text-red-600 dark:text-red-400">{{ item.error }}</p>
+                <div v-if="item.result" class="flex gap-2">
+                  <button type="button" class="btn btn-secondary btn-sm" @click="download(item.result)">
+                    {{ t('imageGen.download') }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-else class="space-y-4">
+            <div v-if="currentResult" class="card space-y-3 p-4">
+              <img :src="currentResult.blobUrl" :alt="currentResult.prompt" class="w-full rounded-lg" />
+              <div class="flex flex-wrap gap-2">
+                <button type="button" class="btn btn-primary btn-sm" @click="download(currentResult)">
+                  {{ t('imageGen.download') }}
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" @click="clearResult">
+                  {{ t('imageGen.clear') }}
+                </button>
+                <button
+                  v-if="!currentResult.serverArchived"
+                  type="button"
+                  class="btn btn-secondary btn-sm"
+                  @click="archiveResults([currentResult])"
+                >
+                  {{ t('imageGen.longStorage') }}
+                </button>
+              </div>
+            </div>
+            <EmptyState v-else-if="status !== 'generating'" :title="t('imageGen.emptyState')" />
+            <div v-else class="card flex items-center justify-center gap-3 p-10 text-sm text-gray-500 dark:text-gray-400">
+              <LoadingSpinner />
+              <span>{{ progressLabel }}</span>
+            </div>
+          </div>
+
+          <div v-if="historyEnabled" class="card mt-6 space-y-4 p-5">
+            <div class="flex items-center justify-between">
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t('imageGen.history.title') }}
+              </h2>
+              <button type="button" class="btn btn-secondary btn-sm" @click="loadHistory">
+                {{ t('imageGen.history.reload') }}
+              </button>
+            </div>
+            <p v-if="historyError" class="text-sm text-red-600 dark:text-red-400">{{ historyError }}</p>
+            <p v-else-if="!history.length" class="text-sm text-gray-500 dark:text-gray-400">
+              {{ t('imageGen.history.empty') }}
+            </p>
+            <div v-else class="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <div
+                v-for="item in history"
+                :key="item.id"
+                class="group relative overflow-hidden rounded-lg border border-gray-200 dark:border-dark-700"
+              >
+                <img
+                  v-if="historyThumb(item.id)"
+                  :src="historyThumb(item.id)"
+                  :alt="item.prompt"
+                  class="h-28 w-full object-cover"
+                  @error="historyPreviewFailed(item.id)"
+                />
+                <div v-else class="flex h-28 w-full items-center justify-center bg-gray-100 px-2 text-center text-xs text-gray-400 dark:bg-dark-800">
+                  <template v-if="!item.content_available">{{ t('imageGen.history.expired') }}</template>
+                  <template v-else-if="historyPreviewErrors[item.id]">{{ t('imageGen.history.loadFailed') }}</template>
+                  <template v-else>{{ t('common.loading') }}</template>
+                </div>
+                <div class="flex items-center justify-between gap-1 px-2 py-1 text-xs">
+                  <span class="truncate text-gray-500 dark:text-gray-400">{{ item.model }}</span>
+                  <div class="flex gap-1 opacity-0 transition group-hover:opacity-100">
+                    <a
+                      v-if="historyThumb(item.id)"
+                      :href="historyThumb(item.id)"
+                      :download="`image-${item.id}`"
+                      class="text-gray-500 hover:text-gray-700"
+                    >
+                      {{ t('imageGen.download') }}
+                    </a>
+                    <button type="button" class="text-gray-500 hover:text-gray-700" @click="reuse(item)">
+                      {{ t('imageGen.history.reuse') }}
+                    </button>
+                    <button type="button" class="text-red-500 hover:text-red-600" @click="removeHistory(item.id)">
+                      ×
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -351,12 +353,13 @@
         </div>
       </div>
     </div>
-  </div>
+  </AppLayout>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import AppLayout from '@/components/layout/AppLayout.vue'
 import Select from '@/components/common/Select.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
