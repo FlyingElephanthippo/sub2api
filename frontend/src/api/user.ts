@@ -15,6 +15,7 @@ import type {
   NotifyEmailEntry,
   UserAuthProvider,
   UserAffiliateDetail,
+  AffiliateBindResponse,
   AffiliateTransferResponse,
   PlatformQuotasResponse,
 } from '@/types'
@@ -181,6 +182,11 @@ export async function getAffiliateDetail(): Promise<UserAffiliateDetail> {
   return data
 }
 
+export async function bindAffiliateCode(affCode: string): Promise<AffiliateBindResponse> {
+  const { data } = await apiClient.post<AffiliateBindResponse>('/user/aff/bind', { aff_code: affCode })
+  return data
+}
+
 export async function transferAffiliateQuota(): Promise<AffiliateTransferResponse> {
   const { data } = await apiClient.post<AffiliateTransferResponse>('/user/aff/transfer')
   return data
@@ -208,6 +214,7 @@ export const userAPI = {
   buildOAuthBindingStartURL,
   startOAuthBinding,
   getAffiliateDetail,
+  bindAffiliateCode,
   transferAffiliateQuota,
   getMyPlatformQuotas,
 }

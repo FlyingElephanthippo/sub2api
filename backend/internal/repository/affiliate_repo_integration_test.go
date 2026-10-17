@@ -42,6 +42,153 @@ func querySingleInt(t *testing.T, ctx context.Context, client *dbent.Client, que
 	return value
 }
 
+func TestAffiliateRepository_BindInviter_RejectsLongCycleAndRepeat(t *testing.T) {
+	ctx := context.Background()
+	tx := testEntTx(t)
+	txCtx := dbent.NewTxContext(ctx, tx)
+	client := tx.Client()
+	repo := NewAffiliateRepository(client, integrationDB)
+	a := mustCreateAffiliateWithdrawUser(t, client, "bind-a")
+	b := mustCreateAffiliateWithdrawUser(t, client, "bind-b")
+	c := mustCreateAffiliateWithdrawUser(t, client, "bind-c")
+	for _, pair := range [][2]int64{{a.ID, b.ID}, {b.ID, c.ID}} {
+		bound, err := repo.BindInviter(txCtx, pair[0], pair[1])
+		require.NoError(t, err)
+		require.True(t, bound)
+	}
+	bound, err := repo.BindInviter(txCtx, c.ID, a.ID)
+	require.ErrorIs(t, err, service.ErrAffiliateCodeInvalid)
+	require.False(t, bound)
+	bound, err = repo.BindInviter(txCtx, a.ID, c.ID)
+	require.NoError(t, err)
+	require.False(t, bound)
+	require.Equal(t, 1, querySingleInt(t, txCtx, client, "SELECT aff_count FROM user_affiliates WHERE user_id = $1", b.ID))
+	require.Equal(t, 1, querySingleInt(t, txCtx, client, "SELECT aff_count FROM user_affiliates WHERE user_id = $1", c.ID))
+	require.Zero(t, querySingleInt(t, txCtx, client, "SELECT COUNT(*) FROM user_affiliate_ledger WHERE source_user_id IN ($1, $2, $3)", a.ID, b.ID, c.ID))
+}
+
+func TestAffiliateRepository_BindInviter_ConcurrentMutualBinding(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	client := testEntClient(t)
+	repo := NewAffiliateRepository(client, integrationDB)
+	a := mustCreateCommittedAffiliateWithdrawUser(t, "mutual-a", 0, 0, 0)
+	b := mustCreateCommittedAffiliateWithdrawUser(t, "mutual-b", 0, 0, 0)
+	start := make(chan struct{})
+	type result struct {
+		bound bool
+		err   error
+	}
+	results := make(chan result, 2)
+	for _, pair := range [][2]int64{{a.ID, b.ID}, {b.ID, a.ID}} {
+		go func(userID, inviterID int64) {
+			<-start
+			bound, err := repo.BindInviter(ctx, userID, inviterID)
+			results <- result{bound: bound, err: err}
+		}(pair[0], pair[1])
+	}
+	close(start)
+	var boundCount, invalidCount int
+	for range 2 {
+		r := <-results
+		if r.bound {
+			boundCount++
+		}
+		if r.err != nil {
+			require.ErrorIs(t, r.err, service.ErrAffiliateCodeInvalid)
+			invalidCount++
+		}
+	}
+	require.Equal(t, 1, boundCount)
+	require.Equal(t, 1, invalidCount)
+	require.Equal(t, 1, querySingleInt(t, ctx, client, "SELECT SUM(aff_count)::integer FROM user_affiliates WHERE user_id IN ($1, $2)", a.ID, b.ID))
+}
+
+func TestAffiliateRepository_BindInviter_ConcurrentSameInvitee(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	client := testEntClient(t)
+	repo := NewAffiliateRepository(client, integrationDB)
+	invitee := mustCreateCommittedAffiliateWithdrawUser(t, "same-invitee", 0, 0, 0)
+	a := mustCreateCommittedAffiliateWithdrawUser(t, "same-a", 0, 0, 0)
+	b := mustCreateCommittedAffiliateWithdrawUser(t, "same-b", 0, 0, 0)
+	start := make(chan struct{})
+	results := make(chan bool, 2)
+	errors := make(chan error, 2)
+	for _, inviterID := range []int64{a.ID, b.ID} {
+		go func(inviterID int64) {
+			<-start
+			bound, err := repo.BindInviter(ctx, invitee.ID, inviterID)
+			results <- bound
+			errors <- err
+		}(inviterID)
+	}
+	close(start)
+	var boundCount int
+	for range 2 {
+		if <-results {
+			boundCount++
+		}
+		require.NoError(t, <-errors)
+	}
+	require.Equal(t, 1, boundCount)
+	require.Equal(t, 1, querySingleInt(t, ctx, client, "SELECT SUM(aff_count)::integer FROM user_affiliates WHERE user_id IN ($1, $2)", a.ID, b.ID))
+}
+
+func TestAffiliateRepository_AccrueQuota_SkipsPaymentsBeforeSupplementBinding(t *testing.T) {
+	ctx := context.Background()
+	tx := testEntTx(t)
+	txCtx := dbent.NewTxContext(ctx, tx)
+	client := tx.Client()
+	repo := NewAffiliateRepository(client, integrationDB)
+	inviter := mustCreateAffiliateWithdrawUser(t, client, "payment-inviter")
+	invitee := mustCreateAffiliateWithdrawUser(t, client, "payment-invitee")
+	bound, err := repo.BindInviter(txCtx, invitee.ID, inviter.ID)
+	require.NoError(t, err)
+	require.True(t, bound)
+	profile, err := repo.EnsureUserAffiliate(txCtx, invitee.ID)
+	require.NoError(t, err)
+	require.NotNil(t, profile.InviterBoundAt)
+	for i, tc := range []struct {
+		offset        time.Duration
+		eligible      bool
+		freeze        int
+		missingPaidAt bool
+		wrongUser     bool
+	}{
+		{offset: -time.Hour},
+		{offset: 0, eligible: true},
+		{offset: time.Hour, eligible: true, freeze: 24},
+		{missingPaidAt: true},
+		{offset: time.Hour, wrongUser: true},
+	} {
+		userID := invitee.ID
+		if tc.wrongUser {
+			userID = inviter.ID
+		}
+		var paidAt *time.Time
+		if !tc.missingPaidAt {
+			at := profile.InviterBoundAt.Add(tc.offset)
+			paidAt = &at
+		}
+		order, err := client.PaymentOrder.Create().
+			SetUserID(userID).SetUserEmail(invitee.Email).SetUserName("invitee").
+			SetAmount(10).SetPayAmount(10).SetFeeRate(0).
+			SetRechargeCode(fmt.Sprintf("BIND-%d-%d", invitee.ID, i)).
+			SetOutTradeNo(fmt.Sprintf("affiliate-bind-%d-%d", invitee.ID, i)).
+			SetPaymentType("alipay").SetStatus("COMPLETED").
+			SetNillablePaidAt(paidAt).
+			SetExpiresAt(time.Now().Add(24 * time.Hour)).SetClientIP("127.0.0.1").SetSrcHost("test").Save(txCtx)
+		require.NoError(t, err)
+		applied, err := repo.AccrueQuota(txCtx, inviter.ID, invitee.ID, 2, tc.freeze, &order.ID)
+		require.NoError(t, err)
+		require.Equal(t, tc.eligible, applied)
+	}
+	require.Equal(t, 2, querySingleInt(t, txCtx, client, "SELECT COUNT(*) FROM user_affiliate_ledger WHERE user_id = $1 AND action = 'accrue'", inviter.ID))
+	require.InDelta(t, 2, querySingleFloat(t, txCtx, client, "SELECT aff_quota::double precision FROM user_affiliates WHERE user_id = $1", inviter.ID), 1e-9)
+	require.InDelta(t, 2, querySingleFloat(t, txCtx, client, "SELECT aff_frozen_quota::double precision FROM user_affiliates WHERE user_id = $1", inviter.ID), 1e-9)
+}
+
 func TestAffiliateRepository_TransferQuotaToBalance_UsesClaimedQuotaBeforeClear(t *testing.T) {
 	ctx := context.Background()
 	tx := testEntTx(t)

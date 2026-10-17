@@ -726,6 +726,24 @@ export default {
     linkCopied: '邀请链接已复制',
     loadFailed: '加载邀请返利数据失败',
     transferFailed: '转入余额失败',
+    bind: {
+      title: '补填邀请码',
+      description: '注册时忘记填写邀请人的邀请码？可在此补填。',
+      codeLabel: '邀请人的邀请码',
+      codePlaceholder: '请输入邀请人提供的邀请码',
+      onceOnly: '请仔细核对邀请码。每个账号仅可绑定一位邀请人，绑定后无法更改。',
+      futureOnly: '仅对绑定成功后符合系统返利规则的充值生效，历史充值不补发返利。',
+      button: '确认绑定',
+      binding: '绑定中...',
+      bound: '已绑定邀请人，无法更换或重复补填。',
+      success: '邀请码绑定成功',
+      failed: '邀请码绑定失败，请稍后重试',
+      errors: {
+        AFFILIATE_ALREADY_BOUND: '你已绑定邀请人，无法更换或重复补填。',
+        AFFILIATE_CODE_INVALID: '邀请码无效，请核对后重试。不能填写自己的邀请码。',
+        AFFILIATE_DISABLED: '邀请返利功能暂未开启，无法补填邀请码。'
+      }
+    },
     stats: {
       rebateRate: '我的返利比例',
       rebateRateHint: '被邀请用户每次充值后你可获得的返利比例',

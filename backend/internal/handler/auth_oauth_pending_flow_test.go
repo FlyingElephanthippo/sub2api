@@ -2567,6 +2567,7 @@ CREATE TABLE IF NOT EXISTS user_affiliates (
 	aff_code_custom BOOLEAN NOT NULL DEFAULT false,
 	aff_rebate_rate_percent REAL NULL,
 	inviter_id INTEGER NULL,
+	inviter_bound_at TIMESTAMP NULL,
 	aff_count INTEGER NOT NULL DEFAULT 0,
 	aff_quota REAL NOT NULL DEFAULT 0,
 	aff_frozen_quota REAL NOT NULL DEFAULT 0,

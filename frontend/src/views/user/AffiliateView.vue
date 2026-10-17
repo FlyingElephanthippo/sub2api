@@ -84,6 +84,49 @@
         </div>
 
         <div class="card p-6">
+          <h3 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('affiliate.bind.title') }}</h3>
+          <p v-if="hasBoundInviter" role="status" class="mt-2 text-sm text-emerald-600 dark:text-emerald-400">
+            {{ t('affiliate.bind.bound') }}
+          </p>
+          <template v-else>
+            <p class="mt-1 text-sm text-gray-500 dark:text-dark-400">{{ t('affiliate.bind.description') }}</p>
+            <form class="mt-4 space-y-3" @submit.prevent="bindInviter">
+              <div>
+                <label for="affiliate-inviter-code" class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('affiliate.bind.codeLabel') }}
+                </label>
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
+                  <input
+                    id="affiliate-inviter-code"
+                    v-model="inviterCode"
+                    class="input w-full sm:max-w-sm"
+                    type="text"
+                    autocomplete="off"
+                    :spellcheck="false"
+                    maxlength="32"
+                    required
+                    :placeholder="t('affiliate.bind.codePlaceholder')"
+                    :disabled="binding"
+                    :aria-invalid="Boolean(bindingError)"
+                    :aria-describedby="bindingError ? 'affiliate-bind-hint affiliate-bind-error' : 'affiliate-bind-hint'"
+                    @input="bindingError = ''"
+                  />
+                  <button class="btn btn-primary shrink-0" type="submit" :disabled="binding || !inviterCode.trim()">
+                    <Icon v-if="binding" name="refresh" size="sm" class="animate-spin" />
+                    <span>{{ binding ? t('affiliate.bind.binding') : t('affiliate.bind.button') }}</span>
+                  </button>
+                </div>
+              </div>
+              <p id="affiliate-bind-hint" class="text-sm text-amber-600 dark:text-amber-400">{{ t('affiliate.bind.onceOnly') }}</p>
+            </form>
+          </template>
+          <p class="mt-3 text-sm text-gray-500 dark:text-dark-400">{{ t('affiliate.bind.futureOnly') }}</p>
+          <p v-if="bindingError" id="affiliate-bind-error" role="alert" class="mt-3 text-sm text-red-600 dark:text-red-400">
+            {{ bindingError }}
+          </p>
+        </div>
+
+        <div class="card p-6">
           <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h3 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('affiliate.transfer.title') }}</h3>
@@ -150,7 +193,7 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { useClipboard } from '@/composables/useClipboard'
 import { formatCurrency, formatDateTime } from '@/utils/format'
-import { extractApiErrorMessage } from '@/utils/apiError'
+import { extractApiErrorCode, extractApiErrorMessage } from '@/utils/apiError'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -160,6 +203,11 @@ const { copyToClipboard } = useClipboard()
 const loading = ref(true)
 const transferring = ref(false)
 const detail = ref<UserAffiliateDetail | null>(null)
+const inviterCode = ref('')
+const binding = ref(false)
+const bindingError = ref('')
+const boundThisVisit = ref(false)
+const hasBoundInviter = computed(() => boundThisVisit.value || (detail.value?.inviter_id ?? 0) > 0)
 
 const inviteLink = computed(() => {
   if (!detail.value) return ''
@@ -202,6 +250,34 @@ async function copyCode(): Promise<void> {
 async function copyInviteLink(): Promise<void> {
   if (!inviteLink.value) return
   await copyToClipboard(inviteLink.value, t('affiliate.linkCopied'))
+}
+
+async function bindInviter(): Promise<void> {
+  const code = inviterCode.value.trim()
+  if (!code || binding.value || hasBoundInviter.value) return
+
+  binding.value = true
+  bindingError.value = ''
+  try {
+    await userAPI.bindAffiliateCode(code)
+    // Keep the one-time action locked even if the following detail refresh fails.
+    boundThisVisit.value = true
+    inviterCode.value = ''
+    appStore.showSuccess(t('affiliate.bind.success'))
+    await loadAffiliateDetail(true)
+  } catch (error) {
+    bindingError.value = extractApiErrorMessage(error, t('affiliate.bind.failed'), {
+      AFFILIATE_ALREADY_BOUND: t('affiliate.bind.errors.AFFILIATE_ALREADY_BOUND'),
+      AFFILIATE_CODE_INVALID: t('affiliate.bind.errors.AFFILIATE_CODE_INVALID'),
+      AFFILIATE_DISABLED: t('affiliate.bind.errors.AFFILIATE_DISABLED'),
+    })
+    if (extractApiErrorCode(error) === 'AFFILIATE_ALREADY_BOUND') {
+      boundThisVisit.value = true
+      await loadAffiliateDetail(true)
+    }
+  } finally {
+    binding.value = false
+  }
 }
 
 async function transferQuota(): Promise<void> {

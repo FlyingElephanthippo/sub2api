@@ -77,17 +77,61 @@ func (r *affiliateRepository) GetAffiliateByCode(ctx context.Context, code strin
 }
 
 func (r *affiliateRepository) BindInviter(ctx context.Context, userID, inviterID int64) (bool, error) {
+	if userID <= 0 || inviterID <= 0 || userID == inviterID {
+		return false, service.ErrAffiliateCodeInvalid
+	}
 	var bound bool
 	err := r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
-		if _, err := ensureUserAffiliateWithClient(txCtx, txClient, userID); err != nil {
+		// Serializing invitation graph changes makes the ancestor check safe even
+		// when two accounts attempt to bind each other in concurrent transactions.
+		if _, err := txClient.ExecContext(txCtx, "SELECT pg_advisory_xact_lock(hashtext('sub2api:affiliate:inviter-bind'))"); err != nil {
+			return fmt.Errorf("lock affiliate invitation graph: %w", err)
+		}
+		self, err := ensureUserAffiliateWithClient(txCtx, txClient, userID)
+		if err != nil {
 			return err
+		}
+		if self.InviterID != nil {
+			return nil
 		}
 		if _, err := ensureUserAffiliateWithClient(txCtx, txClient, inviterID); err != nil {
 			return err
 		}
+		rows, err := txClient.QueryContext(txCtx, `
+WITH RECURSIVE ancestors AS (
+    SELECT user_id, inviter_id FROM user_affiliates WHERE user_id = $1
+    UNION
+    SELECT ua.user_id, ua.inviter_id
+    FROM user_affiliates ua
+    JOIN ancestors a ON ua.user_id = a.inviter_id
+)
+SELECT EXISTS (SELECT 1 FROM ancestors WHERE user_id = $2)`, inviterID, userID)
+		if err != nil {
+			return fmt.Errorf("check affiliate invitation cycle: %w", err)
+		}
+		var createsCycle bool
+		if !rows.Next() {
+			err = rows.Err()
+			_ = rows.Close()
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("check affiliate invitation cycle: missing result")
+		}
+		err = rows.Scan(&createsCycle)
+		closeErr := rows.Close()
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if createsCycle {
+			return service.ErrAffiliateCodeInvalid
+		}
 
 		res, err := txClient.ExecContext(txCtx,
-			"UPDATE user_affiliates SET inviter_id = $1, updated_at = NOW() WHERE user_id = $2 AND inviter_id IS NULL",
+			"UPDATE user_affiliates SET inviter_id = $1, inviter_bound_at = clock_timestamp(), updated_at = NOW() WHERE user_id = $2 AND inviter_id IS NULL",
 			inviterID, userID,
 		)
 		if err != nil {
@@ -128,7 +172,19 @@ func (r *affiliateRepository) AccrueQuota(ctx context.Context, inviterID, invite
 		} else {
 			updateSQL = "UPDATE user_affiliates SET aff_quota = aff_quota + $1, aff_history_quota = aff_history_quota + $1, updated_at = NOW() WHERE user_id = $2"
 		}
-		res, err := txClient.ExecContext(txCtx, updateSQL, amount, inviterID)
+		args := []any{amount, inviterID}
+		if sourceOrderID != nil {
+			// A delayed fulfillment retry must use the payment time, rather than
+			// the current invitation relationship, to determine rebate eligibility.
+			updateSQL += ` AND EXISTS (
+    SELECT 1 FROM user_affiliates invitee
+    JOIN payment_orders po ON po.id = $4 AND po.user_id = invitee.user_id
+    WHERE invitee.user_id = $3 AND invitee.inviter_id = $2
+      AND po.paid_at >= COALESCE(invitee.inviter_bound_at, invitee.created_at)
+)`
+			args = append(args, inviteeUserID, *sourceOrderID)
+		}
+		res, err := txClient.ExecContext(txCtx, updateSQL, args...)
 		if err != nil {
 			return err
 		}
@@ -962,6 +1018,7 @@ SELECT user_id,
        aff_code_custom,
        aff_rebate_rate_percent,
        inviter_id,
+       inviter_bound_at,
        aff_count,
        aff_quota::double precision,
        aff_frozen_quota::double precision,
@@ -983,6 +1040,7 @@ WHERE user_id = $1`, userID)
 
 	var out service.AffiliateSummary
 	var inviterID sql.NullInt64
+	var inviterBoundAt sql.NullTime
 	var rebateRate sql.NullFloat64
 	if err := rows.Scan(
 		&out.UserID,
@@ -990,6 +1048,7 @@ WHERE user_id = $1`, userID)
 		&out.AffCodeCustom,
 		&rebateRate,
 		&inviterID,
+		&inviterBoundAt,
 		&out.AffCount,
 		&out.AffQuota,
 		&out.AffFrozenQuota,
@@ -1001,6 +1060,9 @@ WHERE user_id = $1`, userID)
 	}
 	if inviterID.Valid {
 		out.InviterID = &inviterID.Int64
+	}
+	if inviterBoundAt.Valid {
+		out.InviterBoundAt = &inviterBoundAt.Time
 	}
 	if rebateRate.Valid {
 		v := rebateRate.Float64
@@ -1016,6 +1078,7 @@ SELECT user_id,
        aff_code_custom,
        aff_rebate_rate_percent,
        inviter_id,
+       inviter_bound_at,
        aff_count,
        aff_quota::double precision,
        aff_frozen_quota::double precision,
@@ -1039,6 +1102,7 @@ LIMIT 1`, strings.ToUpper(strings.TrimSpace(code)))
 
 	var out service.AffiliateSummary
 	var inviterID sql.NullInt64
+	var inviterBoundAt sql.NullTime
 	var rebateRate sql.NullFloat64
 	if err := rows.Scan(
 		&out.UserID,
@@ -1046,6 +1110,7 @@ LIMIT 1`, strings.ToUpper(strings.TrimSpace(code)))
 		&out.AffCodeCustom,
 		&rebateRate,
 		&inviterID,
+		&inviterBoundAt,
 		&out.AffCount,
 		&out.AffQuota,
 		&out.AffFrozenQuota,
@@ -1057,6 +1122,9 @@ LIMIT 1`, strings.ToUpper(strings.TrimSpace(code)))
 	}
 	if inviterID.Valid {
 		out.InviterID = &inviterID.Int64
+	}
+	if inviterBoundAt.Valid {
+		out.InviterBoundAt = &inviterBoundAt.Time
 	}
 	if rebateRate.Valid {
 		v := rebateRate.Float64

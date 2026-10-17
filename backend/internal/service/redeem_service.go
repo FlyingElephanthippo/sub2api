@@ -545,22 +545,25 @@ func (s *RedeemService) redeem(ctx context.Context, userID int64, code string, r
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit transaction: %w", err)
 	}
+	rechargedAt := time.Now()
+	updatedCode, refreshErr := s.redeemRepo.GetByID(ctx, redeemCode.ID)
+	if updatedCode != nil && updatedCode.UsedAt != nil {
+		rechargedAt = *updatedCode.UsedAt
+	}
 
 	// 事务提交成功后失效缓存
 	s.invalidateRedeemCaches(ctx, userID, redeemCode)
 
 	// 余额类正数兑换码触发邀请返利（best-effort，失败不影响兑换结果）
 	if redeemCode.Type == RedeemTypeBalance && redeemCode.Value > 0 {
-		s.tryAccrueAffiliateRebateForRedeem(ctx, userID, redeemCode.Value)
+		s.tryAccrueAffiliateRebateForRedeem(ctx, userID, redeemCode.Value, rechargedAt)
 	}
 
-	// 重新获取更新后的兑换码
-	redeemCode, err = s.redeemRepo.GetByID(ctx, redeemCode.ID)
-	if err != nil {
-		return nil, fmt.Errorf("get updated redeem code: %w", err)
+	if refreshErr != nil {
+		return nil, fmt.Errorf("get updated redeem code: %w", refreshErr)
 	}
 
-	return redeemCode, nil
+	return updatedCode, nil
 }
 
 // invalidateRedeemCaches 失效兑换相关的缓存
@@ -603,7 +606,7 @@ func (s *RedeemService) invalidateRedeemCaches(ctx context.Context, userID int64
 	}
 }
 
-func (s *RedeemService) tryAccrueAffiliateRebateForRedeem(ctx context.Context, userID int64, amount float64) {
+func (s *RedeemService) tryAccrueAffiliateRebateForRedeem(ctx context.Context, userID int64, amount float64, rechargedAt time.Time) {
 	if ctx.Value(ctxKeySkipRedeemAffiliate{}) != nil {
 		return
 	}
@@ -613,7 +616,7 @@ func (s *RedeemService) tryAccrueAffiliateRebateForRedeem(ctx context.Context, u
 	if !s.affiliateService.IsEnabled(ctx) {
 		return
 	}
-	rebate, err := s.affiliateService.AccrueInviteRebate(ctx, userID, amount)
+	rebate, err := s.affiliateService.AccrueInviteRebateAt(ctx, userID, amount, rechargedAt)
 	if err != nil {
 		logger.LegacyPrintf("service.redeem", "[Redeem] affiliate rebate failed for user %d amount %.2f: %v", userID, amount, err)
 		return

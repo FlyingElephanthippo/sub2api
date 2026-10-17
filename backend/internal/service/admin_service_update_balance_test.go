@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -73,7 +74,7 @@ type adminRechargeAffiliateAccrual struct {
 	amount float64
 }
 
-func (s *adminRechargeAffiliateAccruerStub) AccrueInviteRebate(_ context.Context, userID int64, amount float64) (float64, error) {
+func (s *adminRechargeAffiliateAccruerStub) AccrueInviteRebateAt(_ context.Context, userID int64, amount float64, _ time.Time) (float64, error) {
 	s.calls = append(s.calls, adminRechargeAffiliateAccrual{userID: userID, amount: amount})
 	return s.rebate, s.err
 }

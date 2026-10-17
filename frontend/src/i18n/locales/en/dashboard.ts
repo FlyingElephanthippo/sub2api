@@ -722,6 +722,24 @@ export default {
     linkCopied: 'Invite link copied',
     loadFailed: 'Failed to load affiliate data',
     transferFailed: 'Failed to transfer affiliate quota',
+    bind: {
+      title: 'Add an Inviter Code',
+      description: 'Forgot to enter your inviter’s code when registering? Add it here.',
+      codeLabel: 'Your Inviter’s Code',
+      codePlaceholder: 'Enter the code provided by your inviter',
+      onceOnly: 'Check the code carefully. Each account can have only one inviter, and this cannot be changed after binding.',
+      futureOnly: 'Only eligible recharges after binding earn rebates under the system rules. Previous recharges do not earn retroactive rebates.',
+      button: 'Confirm Binding',
+      binding: 'Binding...',
+      bound: 'An inviter is already bound and cannot be changed or added again.',
+      success: 'Inviter code bound successfully',
+      failed: 'Failed to bind inviter code. Please try again later.',
+      errors: {
+        AFFILIATE_ALREADY_BOUND: 'You already have an inviter and cannot change or add one again.',
+        AFFILIATE_CODE_INVALID: 'Invalid inviter code. Check the code and try again. You cannot use your own code.',
+        AFFILIATE_DISABLED: 'Affiliate rebates are currently disabled. Inviter codes cannot be added.'
+      }
+    },
     stats: {
       rebateRate: 'My Rebate Rate',
       rebateRateHint: 'What you earn each time an invitee recharges',

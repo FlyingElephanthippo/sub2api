@@ -211,6 +211,31 @@ func (h *UserHandler) GetAffiliate(c *gin.Context) {
 	response.Success(c, detail)
 }
 
+type BindAffiliateRequest struct {
+	AffCode string `json:"aff_code" binding:"required,max=32"`
+}
+
+// BindAffiliate supplements the current user's missing invitation relationship.
+// POST /api/v1/user/aff/bind
+func (h *UserHandler) BindAffiliate(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+
+	var req BindAffiliateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if err := h.affiliateService.SupplementInviterByCode(c.Request.Context(), subject.UserID, req.AffCode); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"bound": true})
+}
+
 // TransferAffiliateQuota transfers all available affiliate quota into current balance.
 // POST /api/v1/user/aff/transfer
 func (h *UserHandler) TransferAffiliateQuota(c *gin.Context) {

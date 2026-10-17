@@ -536,6 +536,7 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 		return nil, err
 	}
 
+	rechargedAt := time.Now()
 	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -545,7 +546,7 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 	if s.authCacheInvalidator != nil && balanceDiff != 0 {
 		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
 	}
-	s.tryAccrueAffiliateRebateForAdminRecharge(ctx, userID, operation, balance)
+	s.tryAccrueAffiliateRebateForAdminRecharge(ctx, userID, operation, balance, rechargedAt)
 
 	if s.billingCacheService != nil {
 		go func() {
@@ -572,8 +573,7 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 			UsedBy: &user.ID,
 			Notes:  notes,
 		}
-		now := time.Now()
-		adjustmentRecord.UsedAt = &now
+		adjustmentRecord.UsedAt = &rechargedAt
 
 		if err := s.redeemCodeRepo.Create(ctx, adjustmentRecord); err != nil {
 			logger.LegacyPrintf("service.admin", "failed to create balance adjustment redeem code: %v", err)
@@ -583,7 +583,7 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 	return user, nil
 }
 
-func (s *adminServiceImpl) tryAccrueAffiliateRebateForAdminRecharge(ctx context.Context, userID int64, operation string, amount float64) {
+func (s *adminServiceImpl) tryAccrueAffiliateRebateForAdminRecharge(ctx context.Context, userID int64, operation string, amount float64, rechargedAt time.Time) {
 	if operation != "add" || amount <= 0 || s.settingService == nil || s.affiliateService == nil {
 		return
 	}
@@ -591,7 +591,7 @@ func (s *adminServiceImpl) tryAccrueAffiliateRebateForAdminRecharge(ctx context.
 		return
 	}
 
-	rebate, err := s.affiliateService.AccrueInviteRebate(ctx, userID, amount)
+	rebate, err := s.affiliateService.AccrueInviteRebateAt(ctx, userID, amount, rechargedAt)
 	if err != nil {
 		logger.LegacyPrintf("service.admin", "affiliate rebate failed for admin recharge: user_id=%d amount=%.8f err=%v", userID, amount, err)
 		return

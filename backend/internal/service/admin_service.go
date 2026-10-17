@@ -720,7 +720,7 @@ type ChannelCacheInvalidator interface {
 }
 
 type adminRechargeAffiliateAccruer interface {
-	AccrueInviteRebate(ctx context.Context, inviteeUserID int64, baseRechargeAmount float64) (float64, error)
+	AccrueInviteRebateAt(ctx context.Context, inviteeUserID int64, baseRechargeAmount float64, rechargedAt time.Time) (float64, error)
 }
 
 type userGroupRateBatchReader interface {

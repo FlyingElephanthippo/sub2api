@@ -18,6 +18,7 @@ var (
 	ErrAffiliateCodeInvalid     = infraerrors.BadRequest("AFFILIATE_CODE_INVALID", "invalid affiliate code")
 	ErrAffiliateCodeTaken       = infraerrors.Conflict("AFFILIATE_CODE_TAKEN", "affiliate code already in use")
 	ErrAffiliateAlreadyBound    = infraerrors.Conflict("AFFILIATE_ALREADY_BOUND", "affiliate inviter already bound")
+	ErrAffiliateDisabled        = infraerrors.Forbidden("AFFILIATE_DISABLED", "affiliate program is disabled")
 	ErrAffiliateQuotaEmpty      = infraerrors.BadRequest("AFFILIATE_QUOTA_EMPTY", "no affiliate quota available to transfer")
 
 	ErrAffiliateQuotaInsufficient     = infraerrors.BadRequest("AFFILIATE_QUOTA_INSUFFICIENT", "insufficient available affiliate quota")
@@ -63,17 +64,18 @@ func isValidAffiliateCodeFormat(code string) bool {
 }
 
 type AffiliateSummary struct {
-	UserID               int64     `json:"user_id"`
-	AffCode              string    `json:"aff_code"`
-	AffCodeCustom        bool      `json:"aff_code_custom"`
-	AffRebateRatePercent *float64  `json:"aff_rebate_rate_percent,omitempty"`
-	InviterID            *int64    `json:"inviter_id,omitempty"`
-	AffCount             int       `json:"aff_count"`
-	AffQuota             float64   `json:"aff_quota"`
-	AffFrozenQuota       float64   `json:"aff_frozen_quota"`
-	AffHistoryQuota      float64   `json:"aff_history_quota"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	UserID               int64      `json:"user_id"`
+	AffCode              string     `json:"aff_code"`
+	AffCodeCustom        bool       `json:"aff_code_custom"`
+	AffRebateRatePercent *float64   `json:"aff_rebate_rate_percent,omitempty"`
+	InviterID            *int64     `json:"inviter_id,omitempty"`
+	InviterBoundAt       *time.Time `json:"inviter_bound_at,omitempty"`
+	AffCount             int        `json:"aff_count"`
+	AffQuota             float64    `json:"aff_quota"`
+	AffFrozenQuota       float64    `json:"aff_frozen_quota"`
+	AffHistoryQuota      float64    `json:"aff_history_quota"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
 }
 
 type AffiliateInvitee struct {
@@ -85,13 +87,14 @@ type AffiliateInvitee struct {
 }
 
 type AffiliateDetail struct {
-	UserID          int64   `json:"user_id"`
-	AffCode         string  `json:"aff_code"`
-	InviterID       *int64  `json:"inviter_id,omitempty"`
-	AffCount        int     `json:"aff_count"`
-	AffQuota        float64 `json:"aff_quota"`
-	AffFrozenQuota  float64 `json:"aff_frozen_quota"`
-	AffHistoryQuota float64 `json:"aff_history_quota"`
+	UserID          int64      `json:"user_id"`
+	AffCode         string     `json:"aff_code"`
+	InviterID       *int64     `json:"inviter_id,omitempty"`
+	InviterBoundAt  *time.Time `json:"inviter_bound_at,omitempty"`
+	AffCount        int        `json:"aff_count"`
+	AffQuota        float64    `json:"aff_quota"`
+	AffFrozenQuota  float64    `json:"aff_frozen_quota"`
+	AffHistoryQuota float64    `json:"aff_history_quota"`
 	// EffectiveRebateRatePercent 是当前用户作为邀请人时实际生效的返利比例：
 	// 优先用户自己的专属比例（aff_rebate_rate_percent），否则回退到全局比例。
 	// 用于在用户的 /affiliate 页面直观展示「分享后能拿到多少」。
@@ -281,6 +284,7 @@ func (s *AffiliateService) GetAffiliateDetail(ctx context.Context, userID int64)
 		UserID:                     summary.UserID,
 		AffCode:                    summary.AffCode,
 		InviterID:                  summary.InviterID,
+		InviterBoundAt:             summary.InviterBoundAt,
 		AffCount:                   summary.AffCount,
 		AffQuota:                   summary.AffQuota,
 		AffFrozenQuota:             summary.AffFrozenQuota,
@@ -291,8 +295,22 @@ func (s *AffiliateService) GetAffiliateDetail(ctx context.Context, userID int64)
 }
 
 func (s *AffiliateService) BindInviterByCode(ctx context.Context, userID int64, rawCode string) error {
+	return s.bindInviterByCode(ctx, userID, rawCode, false)
+}
+
+// SupplementInviterByCode binds a previously unbound account. Unlike optional
+// registration input, empty codes, disabled referrals and existing bindings are errors.
+// Binding only changes the invitation relationship; it never issues past rebates.
+func (s *AffiliateService) SupplementInviterByCode(ctx context.Context, userID int64, rawCode string) error {
+	if userID <= 0 {
+		return infraerrors.BadRequest("INVALID_USER", "invalid user")
+	}
+	return s.bindInviterByCode(ctx, userID, rawCode, true)
+}
+
+func (s *AffiliateService) bindInviterByCode(ctx context.Context, userID int64, rawCode string, supplement bool) error {
 	code := strings.ToUpper(strings.TrimSpace(rawCode))
-	if code == "" {
+	if code == "" && !supplement {
 		return nil
 	}
 	if s == nil || s.repo == nil {
@@ -300,6 +318,9 @@ func (s *AffiliateService) BindInviterByCode(ctx context.Context, userID int64, 
 	}
 	// 总开关关闭时，注册阶段静默忽略 aff 参数（不报错，避免阻断注册流程）
 	if !s.IsEnabled(ctx) {
+		if supplement {
+			return ErrAffiliateDisabled
+		}
 		return nil
 	}
 	if !isValidAffiliateCodeFormat(code) {
@@ -311,6 +332,9 @@ func (s *AffiliateService) BindInviterByCode(ctx context.Context, userID int64, 
 		return err
 	}
 	if selfSummary.InviterID != nil {
+		if supplement {
+			return ErrAffiliateAlreadyBound
+		}
 		return nil
 	}
 
@@ -336,10 +360,26 @@ func (s *AffiliateService) BindInviterByCode(ctx context.Context, userID int64, 
 }
 
 func (s *AffiliateService) AccrueInviteRebate(ctx context.Context, inviteeUserID int64, baseRechargeAmount float64) (float64, error) {
-	return s.AccrueInviteRebateForOrder(ctx, inviteeUserID, baseRechargeAmount, nil)
+	return s.AccrueInviteRebateAt(ctx, inviteeUserID, baseRechargeAmount, time.Now())
+}
+
+// AccrueInviteRebateAt uses the successful recharge event time so work delayed
+// by cache invalidation cannot rebate a recharge that preceded inviter binding.
+func (s *AffiliateService) AccrueInviteRebateAt(ctx context.Context, inviteeUserID int64, baseRechargeAmount float64, rechargedAt time.Time) (float64, error) {
+	if rechargedAt.IsZero() {
+		return 0, nil
+	}
+	return s.accrueInviteRebate(ctx, inviteeUserID, baseRechargeAmount, nil, &rechargedAt)
 }
 
 func (s *AffiliateService) AccrueInviteRebateForOrder(ctx context.Context, inviteeUserID int64, baseRechargeAmount float64, sourceOrderID *int64) (float64, error) {
+	if sourceOrderID == nil {
+		return s.AccrueInviteRebate(ctx, inviteeUserID, baseRechargeAmount)
+	}
+	return s.accrueInviteRebate(ctx, inviteeUserID, baseRechargeAmount, sourceOrderID, nil)
+}
+
+func (s *AffiliateService) accrueInviteRebate(ctx context.Context, inviteeUserID int64, baseRechargeAmount float64, sourceOrderID *int64, rechargedAt *time.Time) (float64, error) {
 	if s == nil || s.repo == nil {
 		return 0, nil
 	}
@@ -357,6 +397,15 @@ func (s *AffiliateService) AccrueInviteRebateForOrder(ctx context.Context, invit
 	}
 	if inviteeSummary.InviterID == nil || *inviteeSummary.InviterID <= 0 {
 		return 0, nil
+	}
+	if rechargedAt != nil {
+		boundAt := inviteeSummary.CreatedAt
+		if inviteeSummary.InviterBoundAt != nil {
+			boundAt = *inviteeSummary.InviterBoundAt
+		}
+		if rechargedAt.Before(boundAt) {
+			return 0, nil
+		}
 	}
 
 	// 加载邀请人 profile，优先使用专属比例（覆盖全局）

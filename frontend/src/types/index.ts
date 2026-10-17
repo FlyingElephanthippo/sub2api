@@ -157,6 +157,7 @@ export interface UserAffiliateDetail {
   user_id: number
   aff_code: string
   inviter_id?: number | null
+  inviter_bound_at?: string | null
   aff_count: number
   aff_quota: number
   aff_frozen_quota: number
@@ -169,6 +170,10 @@ export interface UserAffiliateDetail {
 export interface AffiliateTransferResponse {
   transferred_quota: number
   balance: number
+}
+
+export interface AffiliateBindResponse {
+  bound: boolean
 }
 
 export interface SendVerifyCodeRequest {
