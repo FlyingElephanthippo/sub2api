@@ -1,4 +1,4 @@
-import { onMounted, onUnmounted, nextTick } from 'vue'
+import { onActivated, onMounted, onUnmounted, nextTick } from 'vue'
 import { driver, type Driver, type DriveStep } from 'driver.js'
 import 'driver.js/dist/driver.css'
 import { useAuthStore as useUserStore } from '@/stores/auth'
@@ -520,11 +520,17 @@ export function useOnboardingTour(options: OnboardingOptions) {
     void startTour()
   }
 
-  onMounted(async () => {
+  const registerControls = () => {
     onboardingStore.setControlMethods({
       nextStep,
       isCurrentStep
     })
+  }
+
+  onActivated(registerControls)
+
+  onMounted(async () => {
+    registerControls()
 
     if (onboardingStore.isDriverActive()) {
       driverInstance = onboardingStore.getDriverInstance()

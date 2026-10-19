@@ -369,13 +369,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onActivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Select from '@/components/common/Select.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 import { keysAPI } from '@/api/keys'
 import {
   deleteHistory,
@@ -434,6 +435,7 @@ interface ReferenceItem {
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const authStore = useAuthStore()
 const {
   status,
   currentResult,
@@ -493,10 +495,20 @@ const estimateError = ref('')
 let estimateTimer: ReturnType<typeof setTimeout> | undefined
 let estimateController: AbortController | null = null
 let loadToken = 0
+let keyLoadToken = 0
 let modelLoadToken = 0
 let modelController: AbortController | null = null
 let modelLoadPromise = Promise.resolve()
 let disposed = false
+let activationCount = 0
+let generationSession = 0
+let submissionToken = 0
+
+watch(() => authStore.isAuthenticated ? authStore.user?.id : null, () => {
+  generationSession += 1
+  cancelGeneration()
+  clearAllResults()
+}, { flush: 'sync' })
 
 const provider = computed(() => resolveImageModel(model.value).provider)
 const modelOptions = computed(() =>
@@ -612,8 +624,10 @@ function historyContentMissing(error: unknown): boolean {
 /* ---------------------------------- 数据加载 -------------------------------- */
 
 async function loadKeys(): Promise<void> {
+  const token = ++keyLoadToken
   try {
     const response = await keysAPI.list(1, 100, { status: 'active' })
+    if (disposed || token !== keyLoadToken) return
     keys.value = (response.items || []).filter(key => {
       if (key.status !== 'active') return false
       if (!key.group?.allow_image_generation) return false
@@ -624,6 +638,7 @@ async function loadKeys(): Promise<void> {
       selectedKeyID.value = keys.value[0]?.id ?? ''
     }
   } catch {
+    if (disposed || token !== keyLoadToken) return
     keys.value = []
   }
 }
@@ -884,7 +899,10 @@ async function submit(): Promise<void> {
   }
   const request = buildRequest()
   if (!request) return
+  const session = generationSession
+  const submission = ++submissionToken
   const image = await generate(request)
+  if (disposed || session !== generationSession || submission !== submissionToken) return
   if (!image) {
     if (errorMessage.value && !errorMessage.value.startsWith('imageGen.')) {
       appStore.showError(errorMessage.value)
@@ -892,7 +910,7 @@ async function submit(): Promise<void> {
     return
   }
   appStore.showSuccess(t('imageGen.success'))
-  await archiveResults([image])
+  await archiveResults([image], request)
   await loadHistory()
 }
 
@@ -900,28 +918,35 @@ async function submitBatch(): Promise<void> {
   if (!canSubmit.value) return
   const request = buildRequest()
   if (!request) return
+  const session = generationSession
+  const submission = ++submissionToken
   await generateBatch({
     ...request,
     prompts: batchPromptList.value,
     concurrency: IMAGE_GEN_DEFAULTS.batchConcurrency,
   })
+  if (disposed || session !== generationSession || submission !== submissionToken) return
   if (errorMessage.value === 'imageGen.error.allFailed') {
     appStore.showError(t('imageGen.error.allFailed'))
     return
   }
-  appStore.showSuccess(t('imageGen.success'))
   const results = batchItems.value.map(item => item.result).filter((item): item is GeneratedImage => !!item)
-  await archiveResults(results)
+  if (!results.length) return
+  if (status.value === 'success') appStore.showSuccess(t('imageGen.success'))
+  await archiveResults(results, request)
   await loadHistory()
 }
 
-async function archiveResults(images: GeneratedImage[]): Promise<void> {
-  const key = selectedKey.value
-  if (!key || !images.length) return
+async function archiveResults(images: GeneratedImage[], request?: ImageGenRequest): Promise<void> {
+  if (!images.length) return
+  const session = generationSession
   await archive(images, {
-    apiKeyID: key.id,
-    references: toGatewayReferences(),
-    onError: () => appStore.showWarning(t('imageGen.history.archiveFailed')),
+    apiKeyID: request?.apiKeyID,
+    references: request?.references ?? [],
+    referenceSnapshot: request?.referenceSnapshot,
+    onError: () => {
+      if (!disposed && session === generationSession) appStore.showWarning(t('imageGen.history.archiveFailed'))
+    },
   })
 }
 
@@ -993,8 +1018,6 @@ async function removeHistory(id: number): Promise<void> {
 }
 
 function switchTab(value: TabValue): void {
-  cancelGeneration()
-  clearAllResults()
   activeTab.value = value
   if (value !== 'edit') clearReferences()
 }
@@ -1003,9 +1026,18 @@ onMounted(() => {
   void bootstrap()
 })
 
+onActivated(() => {
+  if (activationCount++ === 0) return
+  void (async () => {
+    await loadKeys()
+    await loadHistory()
+  })()
+})
+
 onUnmounted(() => {
   disposed = true
   loadToken += 1
+  keyLoadToken += 1
   modelLoadToken += 1
   modelController?.abort()
   for (const id of Object.keys(historyPreviewUrls.value).map(Number)) releaseHistoryPreview(id)

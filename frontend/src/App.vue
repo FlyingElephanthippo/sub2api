@@ -20,6 +20,7 @@ const subscriptionStore = useSubscriptionStore()
 const announcementStore = useAnnouncementStore()
 const adminComplianceStore = useAdminComplianceStore()
 const adminSettingsStore = useAdminSettingsStore()
+const routeCacheIdentity = computed(() => authStore.isAuthenticated ? authStore.user?.id : 'anonymous')
 
 function updateDocumentTitle() {
   const customMenuItems = [
@@ -163,7 +164,11 @@ onMounted(async () => {
 
 <template>
   <NavigationProgress />
-  <RouterView />
+  <RouterView v-slot="{ Component }">
+    <KeepAlive :key="routeCacheIdentity" include="ImageGenView" :max="1">
+      <component :is="Component" />
+    </KeepAlive>
+  </RouterView>
   <Toast />
   <AnnouncementPopup />
   <AdminComplianceDialog />

@@ -24,7 +24,7 @@
 
 <script setup lang="ts">
 import '@/styles/onboarding.css'
-import { computed, onMounted } from 'vue'
+import { computed, onActivated, onMounted } from 'vue'
 import { useAppStore } from '@/stores'
 import { useAuthStore } from '@/stores/auth'
 import { useOnboardingTour } from '@/composables/useOnboardingTour'
@@ -45,6 +45,10 @@ const { replayTour } = useOnboardingTour({
 const onboardingStore = useOnboardingStore()
 
 onMounted(() => {
+  onboardingStore.setReplayCallback(replayTour)
+})
+
+onActivated(() => {
   onboardingStore.setReplayCallback(replayTour)
 })
 

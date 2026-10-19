@@ -45,6 +45,8 @@ export interface GeneratedImage {
   normalizedParams: unknown
   /** 已写进服务端历史，卸载时可以不用再归档 */
   serverArchived: boolean
+  apiKeyID?: number
+  referenceSnapshot?: unknown
 }
 
 export interface BatchItem {
@@ -160,6 +162,7 @@ export function useImageGeneration() {
   const progress = ref('')
 
   const blobUrls = new Set<string>()
+  const archiveInFlight = new Map<string, Promise<void>>()
   let controller: AbortController | null = null
   let runToken = 0
 
@@ -189,6 +192,12 @@ export function useImageGeneration() {
       provider: spec.provider,
       normalizedParams: normalizedParamsFor(spec.provider, req),
       serverArchived: false,
+      apiKeyID: req.apiKeyID,
+      referenceSnapshot: req.referenceSnapshot ?? req.references.map((reference, index) => ({
+        index: index + 1,
+        name: reference.name,
+        content_type: reference.mimeType || 'image/png',
+      })),
     }
   }
 
@@ -216,7 +225,10 @@ export function useImageGeneration() {
         onAccepted: () => onAccepted?.(),
       },
       signal
-    ).then(result => toGeneratedImage(result, req, format))
+    ).then(result => {
+      if (signal.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
+      return toGeneratedImage(result, req, format)
+    })
   }
 
   /** 单张生成（含图生图）。返回 null 表示被取消或已被更新的请求取代。 */
@@ -333,23 +345,31 @@ export function useImageGeneration() {
       }))
 
     await Promise.allSettled(
-      pending.map(async image => {
-        try {
-          await archiveHistory({
-            api_key_id: options.apiKeyID,
-            model: image.model,
-            provider: image.provider,
-            prompt: image.prompt,
-            content_type: image.mimeType,
-            normalized_params: image.normalizedParams,
-            reference_snapshot: snapshot,
-            status: 'completed',
-            file: new File([image.blob], `${image.id}.${image.extension}`, { type: image.mimeType }),
-          })
-          image.serverArchived = true
-        } catch (error) {
-          options.onError?.(errorFrom(error))
-        }
+      pending.map(image => {
+        const existing = archiveInFlight.get(image.id)
+        if (existing) return existing
+        const saved = (async () => {
+          try {
+            await archiveHistory({
+              api_key_id: image.apiKeyID ?? options.apiKeyID,
+              model: image.model,
+              provider: image.provider,
+              prompt: image.prompt,
+              content_type: image.mimeType,
+              normalized_params: image.normalizedParams,
+              reference_snapshot: image.referenceSnapshot ?? snapshot,
+              status: 'completed',
+              file: new File([image.blob], `${image.id}.${image.extension}`, { type: image.mimeType }),
+            })
+            image.serverArchived = true
+          } catch (error) {
+            options.onError?.(errorFrom(error))
+          } finally {
+            archiveInFlight.delete(image.id)
+          }
+        })()
+        archiveInFlight.set(image.id, saved)
+        return saved
       })
     )
   }

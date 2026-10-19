@@ -18,6 +18,7 @@ vi.mock('@/api/imageGenerations', () => ({
   fetchHistoryContent: vi.fn(), deleteHistory: vi.fn(),
 }))
 vi.mock('@/api/keys', () => ({ keysAPI: { list: listKeys } }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ isAuthenticated: true, user: { id: 1 } }) }))
 vi.mock('@/components/layout/AppLayout.vue', () => ({
   default: { template: '<main><slot /></main>' },
 }))
