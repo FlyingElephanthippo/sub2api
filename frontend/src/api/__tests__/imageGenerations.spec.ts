@@ -1,10 +1,69 @@
 import type { InternalAxiosRequestConfig } from 'axios'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { apiClient } from '../client'
-import { archiveHistory, fetchHistoryContent } from '../imageGenerations'
+import { apiClient, buildGatewayUrl } from '../client'
+import { archiveHistory, fetchHistoryContent, listModels } from '../imageGenerations'
 
 vi.mock('@/i18n', () => ({ getLocale: () => 'zh' }))
+
+describe('image generation model API', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    localStorage.removeItem('auth_token')
+  })
+
+  it('uses the selected API Key and preserves valid gateway IDs while filtering duplicates and invalid models', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: [
+      { id: 'gpt-image-2' }, { id: 'claude-sonnet-4-5' }, { id: 'gpt-image-2' },
+      { id: 'gemini-3-pro-image-preview' }, { id: '' }, { id: '   ' },
+      { id: 123 }, {}, null, 'seedream-5.0',
+    ] }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    localStorage.setItem('auth_token', 'panel-session-token')
+
+    expect(await listModels('selected-group-key')).toEqual([
+      'gpt-image-2', 'claude-sonnet-4-5', 'gemini-3-pro-image-preview',
+    ])
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenCalledWith(buildGatewayUrl('/v1/models'), {
+      headers: { Authorization: 'Bearer selected-group-key' }, signal: undefined,
+    })
+  })
+
+  it('passes the cancellation signal to the gateway request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{"data":[]}', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+
+    await listModels('selected-group-key', controller.signal)
+
+    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal)
+  })
+
+  it('preserves API error messages, codes and status', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { message: 'The API key is disabled', code: 'invalid_api_key' },
+    }), { status: 401, statusText: 'Unauthorized' })))
+
+    await expect(listModels('disabled-key')).rejects.toMatchObject({
+      message: 'The API key is disabled', code: 'invalid_api_key', status: 401,
+    })
+  })
+
+  it.each([{}, { data: null }, { data: {} }, { data: 'gpt-image-2' }])(
+    'rejects a malformed model list instead of falling back to a static catalog: %j', async body => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 200 })))
+
+      await expect(listModels('selected-group-key')).rejects.toThrow('Invalid model list response')
+    }
+  )
+
+  it('returns an empty list when the gateway supports no models', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{"data":[]}', { status: 200 })))
+
+    expect(await listModels('selected-group-key')).toEqual([])
+  })
+})
 
 describe('image generation history API', () => {
   const originalAdapter = apiClient.defaults.adapter

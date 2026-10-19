@@ -38,8 +38,20 @@
           <div class="card space-y-4 p-5">
             <div>
               <label class="input-label">{{ t('imageGen.model') }}</label>
-              <Select v-model="model" :options="modelOptions" />
-              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              <Select
+                v-model="model"
+                :options="modelOptions"
+                :disabled="loadingModels || !modelOptions.length"
+                :placeholder="loadingModels ? t('imageGen.modelsLoading') : t('imageGen.selectModel')"
+              />
+              <p v-if="modelsError" class="mt-1 text-xs text-red-600 dark:text-red-400">
+                {{ modelsError }}
+                <button type="button" class="ml-2 underline" @click="loadModels">{{ t('imageGen.retry') }}</button>
+              </p>
+              <p v-else-if="selectedKey && !loadingModels && !modelOptions.length" class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('imageGen.noModels') }}
+              </p>
+              <p v-if="modelAvailable" class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                 {{ t('imageGen.referenceLimit', { count: maxReferences }) }}
               </p>
             </div>
@@ -371,6 +383,7 @@ import {
   fetchHistoryContent,
   getCapabilities,
   listHistory,
+  listModels,
   type ImageGenerationEstimate,
   type ImageGenerationHistoryItem,
 } from '@/api/imageGenerations'
@@ -449,7 +462,10 @@ const activeTab = ref<TabValue>('generate')
 const keys = ref<ApiKey[]>([])
 const selectedKeyID = ref<number | ''>('')
 
-const model = ref(IMAGE_GEN_DEFAULTS.model)
+const model = ref<string>(IMAGE_GEN_DEFAULTS.model)
+const availableModelIDs = ref<string[]>([])
+const loadingModels = ref(false)
+const modelsError = ref('')
 const prompt = ref('')
 const batchPromptsText = ref('')
 const size = ref<string>(IMAGE_GEN_DEFAULTS.size)
@@ -477,14 +493,19 @@ const estimateError = ref('')
 let estimateTimer: ReturnType<typeof setTimeout> | undefined
 let estimateController: AbortController | null = null
 let loadToken = 0
+let modelLoadToken = 0
+let modelController: AbortController | null = null
+let modelLoadPromise = Promise.resolve()
 let disposed = false
 
 const provider = computed(() => resolveImageModel(model.value).provider)
 const modelOptions = computed(() =>
-  (props.providerFilter ? IMAGE_MODELS.filter(m => m.provider === props.providerFilter) : IMAGE_MODELS).map(
-    m => ({ value: m.value, label: m.label })
-  )
+  IMAGE_MODELS
+    .filter(m => (!props.providerFilter || m.provider === props.providerFilter) && availableModelIDs.value.includes(m.value))
+    .map(m => ({ value: m.value, label: m.label }))
 )
+const modelAvailable = computed(() => !loadingModels.value && !modelsError.value
+  && modelOptions.value.some(option => option.value === model.value))
 const spec = computed(() => resolveImageModel(model.value))
 const supportsReferences = computed(() => spec.value.maxReferences > 0)
 const maxReferences = computed(() => Math.min(IMAGE_REFERENCE_DEFAULT_LIMIT, spec.value.maxReferences || IMAGE_REFERENCE_DEFAULT_LIMIT))
@@ -507,6 +528,12 @@ const keyOptions = computed(() =>
 )
 
 const selectedKey = computed(() => keys.value.find(key => key.id === selectedKeyID.value) || null)
+
+watch(selectedKey, () => { modelLoadPromise = loadModels() }, { immediate: true, flush: 'sync' })
+
+watch(modelOptions, options => {
+  if (!options.some(option => option.value === model.value)) model.value = options[0]?.value ?? ''
+}, { immediate: true, flush: 'sync' })
 
 const sizeOptions = computed(() => [
   ...VERIFIED_IMAGE_SIZES.map(preset => ({ value: preset.value, label: preset.label })),
@@ -602,6 +629,32 @@ async function loadKeys(): Promise<void> {
   }
 }
 
+async function loadModels(): Promise<void> {
+  const token = ++modelLoadToken
+  modelController?.abort()
+  const previousModel = model.value
+  availableModelIDs.value = []
+  model.value = ''
+  modelsError.value = ''
+  const key = selectedKey.value
+  loadingModels.value = !!key
+  if (!key || disposed) return
+
+  const controller = new AbortController()
+  modelController = controller
+  try {
+    const models = await listModels(key.key, controller.signal)
+    if (disposed || token !== modelLoadToken) return
+    availableModelIDs.value = models
+    if (modelOptions.value.some(option => option.value === previousModel)) model.value = previousModel
+  } catch {
+    if (disposed || token !== modelLoadToken) return
+    modelsError.value = t('imageGen.modelsLoadFailed')
+  } finally {
+    if (!disposed && token === modelLoadToken) loadingModels.value = false
+  }
+}
+
 async function loadHistory(): Promise<void> {
   if (!historyEnabled.value || disposed) return
   historyError.value = ''
@@ -648,6 +701,7 @@ async function bootstrap(): Promise<void> {
   }
   await loadKeys()
   await loadHistory()
+  await modelLoadPromise
   if (selectedKey.value && provider.value === 'dreamina-canvas') {
     await resumePending(window.location.origin, selectedKey.value.key)
   }
@@ -726,14 +780,15 @@ function toGatewayReferences() {
 
 /** 参数一变就重新估价，但要防抖：拖压缩率滑块会连发几十次请求。 */
 watch(
-  [selectedKeyID, model, effectiveSize, aspectRatio, batchPromptCount, provider],
+  [selectedKeyID, model, modelAvailable, effectiveSize, aspectRatio, batchPromptCount, provider],
   () => {
     if (estimateTimer) clearTimeout(estimateTimer)
+    estimateController?.abort()
     estimate.value = null
     estimateError.value = ''
 
     const key = selectedKey.value
-    if (!key || !model.value || sizeError.value) {
+    if (!key || !modelAvailable.value || sizeError.value) {
       estimating.value = false
       return
     }
@@ -741,12 +796,12 @@ watch(
     estimating.value = true
     estimateTimer = setTimeout(() => void runEstimate(), props.fixedPlatform ? 1000 : 250)
   },
-  { immediate: true }
+  { immediate: true, flush: 'sync' }
 )
 
 async function runEstimate(): Promise<void> {
   const key = selectedKey.value
-  if (!key) return
+  if (!key || !modelAvailable.value) return
   estimateController?.abort()
   const controller = new AbortController()
   estimateController = controller
@@ -782,7 +837,7 @@ async function runEstimate(): Promise<void> {
 
 function buildRequest(): ImageGenRequest | null {
   const key = selectedKey.value
-  if (!key) return null
+  if (!key || !modelAvailable.value) return null
   const isGeminiLike = provider.value === 'gemini-native' || provider.value === 'dreamina-canvas'
   return {
     apiBase: window.location.origin,
@@ -808,7 +863,7 @@ function buildRequest(): ImageGenRequest | null {
 }
 
 const canSubmit = computed(() => {
-  if (!selectedKey.value || !model.value || status.value === 'generating') return false
+  if (!selectedKey.value || !modelAvailable.value || status.value === 'generating') return false
   if (sizeError.value) return false
   if (activeTab.value === 'batch') return batchPromptCount.value > 0
   if (!prompt.value.trim()) return false
@@ -887,6 +942,10 @@ function clearResult(): void {
 }
 
 async function reuse(item: ImageGenerationHistoryItem): Promise<void> {
+  if (!modelOptions.value.some(option => option.value === item.model)) {
+    appStore.showWarning(t('imageGen.modelUnavailable'))
+    return
+  }
   const params = (item.normalized_params || {}) as Record<string, unknown>
   model.value = item.model
   if (typeof params.size === 'string') size.value = params.size
@@ -948,6 +1007,8 @@ onMounted(() => {
 onUnmounted(() => {
   disposed = true
   loadToken += 1
+  modelLoadToken += 1
+  modelController?.abort()
   for (const id of Object.keys(historyPreviewUrls.value).map(Number)) releaseHistoryPreview(id)
   if (estimateTimer) clearTimeout(estimateTimer)
   estimateController?.abort()

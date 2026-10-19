@@ -174,6 +174,21 @@ function parseGatewayError(response: Response): Promise<Error> {
     })
 }
 
+/** 按所选 API Key 的分组获取网关实际支持的模型。 */
+export async function listModels(apiKey: string, signal?: AbortSignal): Promise<string[]> {
+  const response = await fetch(buildGatewayUrl('/v1/models'), {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    signal,
+  })
+  if (!response.ok) throw await parseGatewayError(response)
+  const body = await response.json()
+  if (!Array.isArray(body?.data)) throw new Error('Invalid model list response')
+
+  return [...new Set<string>(body.data
+    .map((model: unknown) => (model as { id?: unknown } | null)?.id)
+    .filter((id: unknown): id is string => typeof id === 'string' && id.trim().length > 0))]
+}
+
 /**
  * 列出当前 API Key 最近的任务。走网关鉴权，用裸 fetch 而不是 apiClient ——
  * 这两条路径的凭据完全不同（API Key vs 面板 token）。
