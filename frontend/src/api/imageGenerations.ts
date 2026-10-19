@@ -176,7 +176,7 @@ function parseGatewayError(response: Response): Promise<Error> {
 
 /** 按所选 API Key 的分组获取网关实际支持的模型。 */
 export async function listModels(apiKey: string, signal?: AbortSignal): Promise<string[]> {
-  const response = await fetch(buildGatewayUrl('/v1/models'), {
+  const response = await fetch(buildGatewayUrl('/v1/models?purpose=image-generation'), {
     headers: { Authorization: `Bearer ${apiKey}` },
     signal,
   })

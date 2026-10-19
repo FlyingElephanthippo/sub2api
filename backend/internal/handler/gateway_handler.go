@@ -1159,7 +1159,9 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		platform = forcedPlatform
 	}
 
-	if platform == service.PlatformOpenAI && apiKey != nil && apiKey.Group != nil &&
+	// Codex discovery describes Responses driver models and can omit supported
+	// image tool models. The image picker needs the local group routing catalog.
+	if c.Query("purpose") != "image-generation" && platform == service.PlatformOpenAI && apiKey != nil && apiKey.Group != nil &&
 		apiKey.Group.Platform == service.PlatformOpenAI && apiKey.Group.CodexModelsManifestConfig.Enabled {
 		h.pinnedOpenAIModels(c, apiKey.Group)
 		return

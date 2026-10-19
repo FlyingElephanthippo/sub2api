@@ -139,10 +139,13 @@ export const IMAGE_MODELS: ImageModelSpec[] = [
 export const DEFAULT_IMAGE_MODEL = 'gpt-image-2'
 
 /**
- * 聚合渠道 W 允许直接用未登记的 w-* 模型名代管，上游新增模型时无需改前端。
- * 其余渠道必须落在上面三个目录里，否则回落到默认模型。
+ * GPT Image 2 与 W 家族沿用对应的参数约束，并保留分组返回的完整模型 ID。
+ * 未识别的名称仅在参数解析时回落默认规格；可选列表仍由下方函数严格筛选。
  */
 export function resolveImageModel(model: string): ImageModelSpec {
+  if (/^gpt-image-2(?:[.-][^\s/*?#]+)*$/.test(model)) {
+    return { ...OPENAI_RESPONSES_MODELS[0], value: model, label: model === DEFAULT_IMAGE_MODEL ? 'GPT Image 2' : model }
+  }
   if (/^w-(gpt-image|nano-banana)[a-z0-9.-]+$/.test(model)) {
     return {
       ...AGGREGATE_W_MODELS[0],
@@ -155,6 +158,18 @@ export function resolveImageModel(model: string): ImageModelSpec {
       spec => spec.value === model
     ) ?? OPENAI_RESPONSES_MODELS[0]
   )
+}
+
+/** 目录提供参数约束，实际提交 ID 始终取所选 Key 返回的公开模型名。 */
+export function getAvailableImageModels(modelIDs: string[], providerFilter?: ImageProvider): ImageModelSpec[] {
+  const ids = new Set(modelIDs)
+  const models = IMAGE_MODELS.filter(model => ids.has(model.value))
+  for (const id of ids) {
+    if (models.some(model => model.value === id)) continue
+    if (!/^gpt-image-2(?:[.-][^\s/*?#]+)*$/.test(id) && !/^w-(gpt-image|nano-banana)[a-z0-9.-]+$/.test(id)) continue
+    models.push(resolveImageModel(id))
+  }
+  return providerFilter ? models.filter(model => model.provider === providerFilter) : models
 }
 
 /**

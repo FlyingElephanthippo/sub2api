@@ -25,7 +25,7 @@ describe('image generation model API', () => {
       'gpt-image-2', 'claude-sonnet-4-5', 'gemini-3-pro-image-preview',
     ])
     expect(fetchMock).toHaveBeenCalledOnce()
-    expect(fetchMock).toHaveBeenCalledWith(buildGatewayUrl('/v1/models'), {
+    expect(fetchMock).toHaveBeenCalledWith(buildGatewayUrl('/v1/models?purpose=image-generation'), {
       headers: { Authorization: 'Bearer selected-group-key' }, signal: undefined,
     })
   })

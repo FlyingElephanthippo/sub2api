@@ -391,7 +391,7 @@ import {
   IMAGE_BACKGROUND_OPTIONS,
   IMAGE_FORMAT_OPTIONS,
   IMAGE_GEN_DEFAULTS,
-  IMAGE_MODELS,
+  getAvailableImageModels,
   IMAGE_QUALITY_OPTIONS,
   IMAGE_REFERENCE_DEFAULT_LIMIT,
   IMAGE_REFERENCE_MAX_BYTES,
@@ -500,8 +500,7 @@ let disposed = false
 
 const provider = computed(() => resolveImageModel(model.value).provider)
 const modelOptions = computed(() =>
-  IMAGE_MODELS
-    .filter(m => (!props.providerFilter || m.provider === props.providerFilter) && availableModelIDs.value.includes(m.value))
+  getAvailableImageModels(availableModelIDs.value, props.providerFilter)
     .map(m => ({ value: m.value, label: m.label }))
 )
 const modelAvailable = computed(() => !loadingModels.value && !modelsError.value

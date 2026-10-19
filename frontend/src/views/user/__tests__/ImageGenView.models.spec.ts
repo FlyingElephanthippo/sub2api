@@ -125,6 +125,33 @@ describe('ImageGenView group model availability', () => {
     expect(modelSelect(wrapper).props('modelValue')).toBe('gpt-image-2')
   })
 
+  it('retains the production group image aliases and submits the selected public ID unchanged', async () => {
+    const advertised = ['gpt-image-2.0', 'gpt-image-2.0-不超分', 'gpt-image-2.5-flare']
+    listModels.mockResolvedValue(advertised)
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(modelIDs(wrapper)).toEqual(advertised)
+    expect(modelIDs(wrapper)).not.toContain('gpt-image-2')
+    expect(modelIDs(wrapper)).not.toContain('w-nano-banana-2')
+    expect(modelIDs(wrapper)).not.toContain('dreamina-seedream-5.0-pro')
+    expect(modelSelect(wrapper).props('modelValue')).toBe('gpt-image-2.0')
+    await wrapper.get('textarea').setValue('A teacup')
+
+    for (const advertisedID of advertised) {
+      modelSelect(wrapper).vm.$emit('update:modelValue', advertisedID)
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(300)
+      expect(estimate).toHaveBeenLastCalledWith(expect.objectContaining({
+        api_key_id: 1, model: advertisedID,
+      }), expect.any(AbortSignal))
+      await button(wrapper, 'imageGen.generate').trigger('click')
+      expect(generate).toHaveBeenLastCalledWith(expect.objectContaining({
+        model: advertisedID, apiKey: 'sk-model-test-1', apiKeyID: 1,
+      }))
+    }
+  })
+
   it.each([
     { platform: 'aggregate_w', supported: ['w-nano-banana-2', 'w-gpt-image-2'], expected: ['w-gpt-image-2', 'w-nano-banana-2'] },
     { platform: 'jimeng_intl', supported: ['dreamina-seedream-5.0-pro'], expected: ['dreamina-seedream-5.0-pro'] },
