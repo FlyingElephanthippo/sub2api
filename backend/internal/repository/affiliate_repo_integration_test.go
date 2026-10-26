@@ -176,6 +176,7 @@ func TestAffiliateRepository_AccrueQuota_SkipsPaymentsBeforeSupplementBinding(t 
 			SetAmount(10).SetPayAmount(10).SetFeeRate(0).
 			SetRechargeCode(fmt.Sprintf("BIND-%d-%d", invitee.ID, i)).
 			SetOutTradeNo(fmt.Sprintf("affiliate-bind-%d-%d", invitee.ID, i)).
+			SetPaymentTradeNo(fmt.Sprintf("affiliate-bind-trade-%d-%d", invitee.ID, i)).
 			SetPaymentType("alipay").SetStatus("COMPLETED").
 			SetNillablePaidAt(paidAt).
 			SetExpiresAt(time.Now().Add(24 * time.Hour)).SetClientIP("127.0.0.1").SetSrcHost("test").Save(txCtx)
