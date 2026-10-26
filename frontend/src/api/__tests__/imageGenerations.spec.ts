@@ -1,4 +1,4 @@
-import type { InternalAxiosRequestConfig } from 'axios'
+import { AxiosError, type InternalAxiosRequestConfig } from 'axios'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { apiClient, buildGatewayUrl } from '../client'
@@ -86,6 +86,7 @@ describe('image generation history API', () => {
     expect(apiClient.getUri(request)).toContain('/api/v1/image-generations/history/11/content')
     expect(request.headers.get('Authorization')).toBe('Bearer history-test-session')
     expect(request.responseType).toBe('blob')
+    expect(request.timeout).toBe(30000)
   })
 
   it('archives actual image bytes together with metadata so a remounted page can retrieve the image', async () => {
@@ -103,10 +104,28 @@ describe('image generation history API', () => {
 
     const request = adapter.mock.calls[0][0]
     expect(request.data).toBeInstanceOf(FormData)
+    expect(request.timeout).toBe(5 * 60 * 1000)
+    expect(apiClient.defaults.timeout).toBe(30000)
+    expect(request.headers.get('Content-Type')).toBe('multipart/form-data')
     const form = request.data as FormData
     expect((form.get('file') as File).size).toBe(file.size)
     expect((form.get('file') as File).type).toBe('image/png')
     expect(form.get('normalized_params')).toBe('{"size":"1024x1024"}')
     expect(saved).toEqual({ id: 11, content_available: true })
   })
+
+  it.each(['ECONNABORTED', 'ETIMEDOUT', 'ERR_NETWORK'])(
+    'preserves structured transport error %s for archive error handling', async code => {
+      apiClient.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
+        expect(config.timeout).toBe(5 * 60 * 1000)
+        throw new AxiosError('transport detail', code, config)
+      }
+
+      await expect(archiveHistory({
+        model: 'gpt-image-2', provider: 'openai-responses', prompt: 'a cat',
+        file: new File(['png'], 'generated.png', { type: 'image/png' }),
+      })).rejects.toMatchObject({ status: 0, code })
+      expect(apiClient.defaults.timeout).toBe(30000)
+    },
+  )
 })

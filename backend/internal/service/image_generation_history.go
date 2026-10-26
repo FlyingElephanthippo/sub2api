@@ -14,6 +14,10 @@ var (
 	ErrImageGenerationHistoryNotFound = infraerrors.New(http.StatusNotFound, "IMAGE_GENERATION_HISTORY_NOT_FOUND", "image generation history not found")
 	ErrImageGenerationHistoryNoFile   = infraerrors.New(http.StatusNotFound, "IMAGE_GENERATION_HISTORY_NO_CONTENT", "image generation history has no stored content")
 	ErrImageGenerationHistoryInvalid  = infraerrors.New(http.StatusBadRequest, "IMAGE_GENERATION_HISTORY_INVALID", "invalid image generation history payload")
+	ErrImageGenerationHistoryUploadIncomplete = infraerrors.New(http.StatusBadRequest, "IMAGE_GENERATION_HISTORY_UPLOAD_INCOMPLETE", "image history upload was interrupted or could not be read; please retry")
+	ErrImageGenerationHistoryUploadInvalid = infraerrors.New(http.StatusBadRequest, "IMAGE_GENERATION_HISTORY_UPLOAD_INVALID", "image history upload must contain valid multipart form data")
+	ErrImageGenerationHistoryTooLarge = infraerrors.New(http.StatusRequestEntityTooLarge, "IMAGE_GENERATION_HISTORY_TOO_LARGE", "image history upload exceeds the allowed size")
+	ErrImageGenerationHistoryKeyInvalid = infraerrors.New(http.StatusBadRequest, "IMAGE_GENERATION_HISTORY_KEY_INVALID", "invalid API key ID for image history")
 )
 
 // ImageGenerationHistoryRecord 是一条生图历史。Content 只在内联存储时有值；

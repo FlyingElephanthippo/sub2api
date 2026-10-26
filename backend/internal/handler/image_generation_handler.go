@@ -1,19 +1,25 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"strconv"
 	"strings"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // maxImageGenerationArchiveBytes 限制归档单张图片的字节数。图片走 Postgres 行内
@@ -97,13 +103,22 @@ func (h *ImageGenerationHandler) Archive(c *gin.Context) {
 		return
 	}
 	if h == nil || h.service == nil {
-		imageGenerationError(c, service.ErrImageGenerationDisabled)
+		imageGenerationArchiveError(c, "service", service.ErrImageGenerationDisabled)
 		return
 	}
 
+	var body *imageGenerationArchiveBody
+	if c.Request.Body != nil {
+		body = &imageGenerationArchiveBody{ReadCloser: c.Request.Body}
+		c.Request.Body = body
+	}
 	form, err := c.MultipartForm()
 	if err != nil {
-		imageGenerationError(c, service.ErrImageGenerationHistoryInvalid)
+		var readErr error
+		if body != nil {
+			readErr = body.readErr
+		}
+		imageGenerationArchiveError(c, "multipart", imageGenerationMultipartError(err, readErr))
 		return
 	}
 
@@ -124,7 +139,7 @@ func (h *ImageGenerationHandler) Archive(c *gin.Context) {
 
 	apiKeyID, err := parseImageGenerationAPIKeyID(c.PostForm("api_key_id"))
 	if err != nil {
-		imageGenerationError(c, service.ErrImageGenerationHistoryInvalid)
+		imageGenerationArchiveError(c, "key", err)
 		return
 	}
 	if apiKeyID != nil {
@@ -132,18 +147,18 @@ func (h *ImageGenerationHandler) Archive(c *gin.Context) {
 		// 对方的用量视图，所以这里必须校验归属。
 		owned, verifyErr := h.service.VerifyAPIKeyOwnership(c.Request.Context(), userID, *apiKeyID)
 		if verifyErr != nil {
-			imageGenerationError(c, verifyErr)
+			imageGenerationArchiveError(c, "key_ownership", verifyErr)
 			return
 		}
 		if !owned {
-			imageGenerationError(c, service.ErrImageGenerationKeyNotOwned)
+			imageGenerationArchiveError(c, "key_ownership", service.ErrImageGenerationKeyNotOwned)
 			return
 		}
 		in.APIKeyID = apiKeyID
 	}
 
 	if content, err := readImageGenerationUpload(form); err != nil {
-		imageGenerationError(c, err)
+		imageGenerationArchiveError(c, "file", err)
 		return
 	} else if len(content) > 0 {
 		in.Content = content
@@ -151,7 +166,7 @@ func (h *ImageGenerationHandler) Archive(c *gin.Context) {
 
 	record, created, err := h.service.ArchiveHistory(c.Request.Context(), userID, in)
 	if err != nil {
-		imageGenerationError(c, err)
+		imageGenerationArchiveError(c, "service", err)
 		return
 	}
 	if created {
@@ -251,13 +266,13 @@ func parseImageGenerationAPIKeyID(raw string) (*int64, error) {
 	}
 	id, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || id <= 0 {
-		return nil, service.ErrImageGenerationHistoryInvalid
+		return nil, service.ErrImageGenerationHistoryKeyInvalid
 	}
 	return &id, nil
 }
 
 // readImageGenerationUpload 取出 multipart 里的 file 字段。
-// 超限时返回 ErrImageGenerationHistoryInvalid 而不是静默截断。
+// 超限或读失败时返回对应上传错误，而不是静默截断。
 func readImageGenerationUpload(form *multipart.Form) ([]byte, error) {
 	if form == nil {
 		return nil, nil
@@ -268,22 +283,70 @@ func readImageGenerationUpload(form *multipart.Form) ([]byte, error) {
 	}
 	fileHeader := files[0]
 	if fileHeader.Size > maxImageGenerationArchiveBytes {
-		return nil, service.ErrImageGenerationHistoryInvalid
+		return nil, service.ErrImageGenerationHistoryTooLarge
 	}
 	file, err := fileHeader.Open()
 	if err != nil {
-		return nil, service.ErrImageGenerationHistoryInvalid
+		return nil, service.ErrImageGenerationHistoryUploadIncomplete
 	}
 	defer func() { _ = file.Close() }()
 	// 再包一层限长读，防止 multipart 头里的 Size 与实际不符。
 	content, err := io.ReadAll(io.LimitReader(file, maxImageGenerationArchiveBytes+1))
 	if err != nil {
-		return nil, service.ErrImageGenerationHistoryInvalid
+		return nil, service.ErrImageGenerationHistoryUploadIncomplete
 	}
 	if int64(len(content)) > maxImageGenerationArchiveBytes {
-		return nil, service.ErrImageGenerationHistoryInvalid
+		return nil, service.ErrImageGenerationHistoryTooLarge
 	}
 	return content, nil
+}
+
+// 保存底层读取失败的类别；multipart 包的错误不总能区分读体失败和格式错误。
+type imageGenerationArchiveBody struct {
+	io.ReadCloser
+	readErr error
+}
+
+func (b *imageGenerationArchiveBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) {
+		b.readErr = err
+	}
+	return n, err
+}
+
+func imageGenerationMultipartError(err, readErr error) error {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) || errors.As(readErr, &maxErr) || errors.Is(err, multipart.ErrMessageTooLarge) {
+		return service.ErrImageGenerationHistoryTooLarge
+	}
+	if readErr != nil || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return service.ErrImageGenerationHistoryUploadIncomplete
+	}
+	return service.ErrImageGenerationHistoryUploadInvalid
+}
+
+func imageGenerationArchiveError(c *gin.Context, stage string, err error) {
+	logger.L().Warn("image_generation.archive_failed", imageGenerationArchiveDiagnosticFields(c, stage, err)...)
+	imageGenerationError(c, err)
+}
+
+func imageGenerationArchiveDiagnosticFields(c *gin.Context, stage string, err error) []zap.Field {
+	_, params, parseErr := mime.ParseMediaType(c.GetHeader("Content-Type"))
+	contentLength := c.Request.ContentLength
+	if contentLength < -1 {
+		contentLength = -1
+	}
+	reason := infraerrors.Reason(err)
+	if reason == "" {
+		reason = "INTERNAL_ERROR"
+	}
+	return []zap.Field{
+		zap.String("stage", stage),
+		zap.String("reason", reason),
+		zap.Int64("content_length", contentLength),
+		zap.Bool("multipart_boundary_present", parseErr == nil && params["boundary"] != ""),
+	}
 }
 
 func parseImageGenerationTaskLimit(raw string) int {

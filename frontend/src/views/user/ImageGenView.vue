@@ -277,6 +277,15 @@
                   <button type="button" class="btn btn-secondary btn-sm" @click="download(item.result)">
                     {{ t('imageGen.download') }}
                   </button>
+                  <button
+                    v-if="!item.result.serverArchived"
+                    type="button"
+                    class="btn btn-secondary btn-sm"
+                    :disabled="isArchiving(item.result)"
+                    @click="archiveResults([item.result])"
+                  >
+                    {{ isArchiving(item.result) ? t('imageGen.history.archiving') : t('imageGen.longStorage') }}
+                  </button>
                 </div>
               </div>
             </div>
@@ -296,9 +305,10 @@
                   v-if="!currentResult.serverArchived"
                   type="button"
                   class="btn btn-secondary btn-sm"
+                  :disabled="isArchiving(currentResult)"
                   @click="archiveResults([currentResult])"
                 >
-                  {{ t('imageGen.longStorage') }}
+                  {{ isArchiving(currentResult) ? t('imageGen.history.archiving') : t('imageGen.longStorage') }}
                 </button>
               </div>
             </div>
@@ -409,6 +419,7 @@ import {
 } from '@/composables/useImageGeneration'
 import type { ApiKey } from '@/types'
 import { extractApiErrorCode } from '@/utils/apiError'
+import { imageGenerationArchiveErrorMessage } from '@/utils/imageGenerationArchiveError'
 
 const props = withDefaults(
   defineProps<{
@@ -445,6 +456,7 @@ const {
   generate,
   generateBatch,
   archive,
+  isArchiving,
   resumePending,
   cancelGeneration,
   clearAllResults,
@@ -944,8 +956,10 @@ async function archiveResults(images: GeneratedImage[], request?: ImageGenReques
     apiKeyID: request?.apiKeyID,
     references: request?.references ?? [],
     referenceSnapshot: request?.referenceSnapshot,
-    onError: () => {
-      if (!disposed && session === generationSession) appStore.showWarning(t('imageGen.history.archiveFailed'))
+    onError: error => {
+      if (!disposed && session === generationSession) {
+        appStore.showWarning(imageGenerationArchiveErrorMessage(error, t))
+      }
     },
   })
 }

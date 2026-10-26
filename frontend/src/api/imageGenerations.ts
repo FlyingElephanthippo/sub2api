@@ -141,7 +141,7 @@ export async function archiveHistory(
   const { data } = await apiClient.post<ImageGenerationHistoryItem>(
     '/image-generations/history',
     form,
-    { headers: { 'Content-Type': 'multipart/form-data' } }
+    { timeout: 5 * 60 * 1000, headers: { 'Content-Type': 'multipart/form-data' } }
   )
   return data
 }

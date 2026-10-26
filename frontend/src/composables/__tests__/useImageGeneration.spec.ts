@@ -219,14 +219,16 @@ describe('image generation request lifetime and archive snapshots', () => {
 
   it('skips successfully archived images and allows retrying an archive failure', async () => {
     generateImage.mockResolvedValue(pngResult)
-    archiveHistory.mockRejectedValueOnce(new Error('history temporarily unavailable')).mockResolvedValue({ id: 1 })
+    const error = { status: 400, reason: 'IMAGE_GENERATION_HISTORY_UPLOAD_INCOMPLETE', code: 400, message: 'internal detail' }
+    archiveHistory.mockRejectedValueOnce(error).mockResolvedValue({ id: 1 })
     const onError = vi.fn()
     const generation = useImageGeneration()
     const image = await generation.generate(request())
 
     await generation.archive([image!], { references: [], onError })
     expect(image!.serverArchived).toBe(false)
-    expect(onError).toHaveBeenCalledWith('history temporarily unavailable')
+    expect(onError).toHaveBeenCalledWith(error)
+    expect(onError.mock.calls[0][0]).toBe(error)
     await generation.archive([image!], { references: [], onError })
     await generation.archive([image!], { references: [], onError })
 
@@ -248,20 +250,24 @@ describe('image generation request lifetime and archive snapshots', () => {
     const manualSave = generation.archive([image!], options)
     expect(archiveHistory).toHaveBeenCalledOnce()
     expect(image!.serverArchived).toBe(false)
+    expect(generation.isArchiving(image!)).toBe(true)
     firstSave.reject(new Error('temporary history failure'))
     await Promise.all([automaticSave, manualSave])
     expect(onError).toHaveBeenCalledOnce()
     expect(image!.serverArchived).toBe(false)
+    expect(generation.isArchiving(image!)).toBe(false)
 
     const retry = generation.archive([image!], options)
     const repeatedRetry = generation.archive([image!], options)
     expect(archiveHistory).toHaveBeenCalledTimes(2)
+    expect(generation.isArchiving(image!)).toBe(true)
     retrySave.resolve({ id: 1 })
     await Promise.all([retry, repeatedRetry])
     await generation.archive([image!], options)
 
     expect(archiveHistory).toHaveBeenCalledTimes(2)
     expect(image!.serverArchived).toBe(true)
+    expect(generation.isArchiving(image!)).toBe(false)
   })
 
   it('releases completed result URLs only when results are cleared', async () => {

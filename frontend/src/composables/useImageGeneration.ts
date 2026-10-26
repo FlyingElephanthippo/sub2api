@@ -163,6 +163,7 @@ export function useImageGeneration() {
 
   const blobUrls = new Set<string>()
   const archiveInFlight = new Map<string, Promise<void>>()
+  const archivingIDs = ref(new Set<string>())
   let controller: AbortController | null = null
   let runToken = 0
 
@@ -329,7 +330,7 @@ export function useImageGeneration() {
       apiKeyID?: number
       references: ImageReference[]
       referenceSnapshot?: unknown
-      onError?: (message: string) => void
+      onError?: (error: unknown) => void
     }
   ): Promise<void> {
     const pending = images.filter(image => !image.serverArchived)
@@ -348,6 +349,7 @@ export function useImageGeneration() {
       pending.map(image => {
         const existing = archiveInFlight.get(image.id)
         if (existing) return existing
+        archivingIDs.value.add(image.id)
         const saved = (async () => {
           try {
             await archiveHistory({
@@ -363,8 +365,9 @@ export function useImageGeneration() {
             })
             image.serverArchived = true
           } catch (error) {
-            options.onError?.(errorFrom(error))
+            options.onError?.(error)
           } finally {
+            archivingIDs.value.delete(image.id)
             archiveInFlight.delete(image.id)
           }
         })()
@@ -393,6 +396,7 @@ export function useImageGeneration() {
     generate,
     generateBatch,
     archive,
+    isArchiving: (image: GeneratedImage) => archivingIDs.value.has(image.id),
     resumePending,
     cancelGeneration,
     clearAllResults,
