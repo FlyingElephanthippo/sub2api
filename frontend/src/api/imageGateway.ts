@@ -219,6 +219,41 @@ function buildAggregateSyncPayload(req: ImageGenerateRequest, images: string[]):
   }
 }
 
+function buildOpenAIEditFormData(req: ImageGenerateRequest, references: ImageReference[]): FormData {
+  const form = new FormData()
+  const fields = {
+    model: req.model,
+    prompt: req.prompt,
+    size: req.size || '1024x1024',
+    n: 1,
+    response_format: 'b64_json',
+    quality: req.quality,
+    background: req.background,
+    output_format: req.outputFormat,
+    output_compression: req.outputCompression,
+    reference_snapshot: req.referenceSnapshot === undefined ? undefined : JSON.stringify(req.referenceSnapshot),
+  }
+  for (const [name, value] of Object.entries(fields)) {
+    if (value !== undefined) form.append(name, String(value))
+  }
+
+  for (const [index, reference] of references.entries()) {
+    const match = /^data:(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/i.exec(String(reference.dataUrl || '').trim())
+    if (!match) throw new Error('failed to read reference image, please upload again')
+    let bytes: Uint8Array
+    try {
+      const binary = atob(match[2])
+      if (!binary.length) throw new Error('empty image')
+      bytes = Uint8Array.from(binary, character => character.charCodeAt(0))
+    } catch {
+      throw new Error('failed to read reference image, please upload again')
+    }
+    const field = references.length === 1 ? 'image' : 'image[]'
+    form.append(field, new Blob([bytes], { type: match[1] }), reference.name || `reference-${index + 1}`)
+  }
+  return form
+}
+
 /* ---------------------------------- 结果解析 -------------------------------- */
 
 /** Gemini 会返回多个 candidate/part，取最后一张图（首张常是说明文字） */
@@ -450,15 +485,18 @@ async function submitAsync(
   req: ImageGenerateRequest,
   requestID: string,
   signal: AbortSignal,
+  provider: ImageProvider,
   channelLabel: string
 ): Promise<ImageResult> {
   const references = await resolveReferences(req.references ?? [])
+  if (signal.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
   const dataUrls = references.map(ref => String(ref.dataUrl || '').trim()).filter(Boolean)
   if (dataUrls.length !== references.length) {
     throw new Error('failed to read reference image, please upload again')
   }
 
   const path = `${gatewayBase(req.apiBase)}/v1/images/${dataUrls.length ? 'edits' : 'generations'}/async`
+  const multipart = provider === 'openai-responses' && references.length > 0
   const payload = {
     ...buildAggregateSyncPayload(req, dataUrls),
     quality: req.quality,
@@ -470,12 +508,12 @@ async function submitAsync(
   const init: RequestInit = {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
+      ...(!multipart ? { 'Content-Type': 'application/json' } : {}),
       Authorization: `Bearer ${req.apiKey}`,
       'Idempotency-Key': requestID,
       'X-Request-ID': requestID,
     },
-    body: JSON.stringify(payload),
+    body: multipart ? buildOpenAIEditFormData(req, references) : JSON.stringify(payload),
     signal,
   }
 
@@ -655,8 +693,18 @@ async function submitSynchronous(
 ): Promise<ImageResult> {
   const base = gatewayBase(req.apiBase)
   const references = await resolveReferences(req.references ?? [])
+  if (signal.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
+  const multipart = provider === 'openai-responses' && references.length > 0
 
   const send = async (useInline: boolean): Promise<Response> => {
+    if (multipart) {
+      return fetch(`${base}/v1/images/edits`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${req.apiKey}` },
+        body: buildOpenAIEditFormData(req, references),
+        signal,
+      })
+    }
     if (provider === 'gemini-native') {
       return fetch(`${base}/v1beta/models/${encodeURIComponent(req.model)}:generateContent`, {
         method: 'POST',
@@ -684,7 +732,7 @@ async function submitSynchronous(
   }
 
   let response = await send(false)
-  if (!response.ok && shouldRetryInline(response.status, references)) {
+  if (!response.ok && !multipart && shouldRetryInline(response.status, references)) {
     await response.body?.cancel().catch(() => {})
     response = await send(true)
   }
@@ -744,7 +792,7 @@ export async function generateImage(
 
   if (provider === 'openai-responses' || provider === 'aggregate-w-images') {
     try {
-      return await submitAsync(withID, requestID, signal, 'aggregate channel W')
+      return await submitAsync(withID, requestID, signal, provider, 'aggregate channel W')
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       // 只有「异步接口不存在」才值得退回同步；其余错误说明上游确实拒绝了这次请求。
