@@ -693,15 +693,18 @@ async function submitSynchronous(
   }
 
   const channelLabel = provider === 'gemini-native' ? 'Gemini' : 'channel 2'
-  const taskHandle = buildTaskHandleSafe(await response.clone().json(), req.apiBase)
+  const body = await response.json()
 
   if (provider === 'gemini-native') {
-    const body = await response.json()
     const image = extractGeminiImage(body)
     if (!image) throw new Error(extractGeminiFailure(body) || 'No image data in response')
     return image
   }
 
+  const image = await extractOpenAIStyleImage(body, signal)
+  if (image) return image
+
+  const taskHandle = buildTaskHandleSafe(body, req.apiBase)
   if (taskHandle) {
     return pollTask(taskHandle, {
       apiKey: req.apiKey,
@@ -711,10 +714,7 @@ async function submitSynchronous(
     })
   }
 
-  const body = await response.json()
-  const image = await extractOpenAIStyleImage(body, signal)
-  if (!image) throw new Error(`${channelLabel} returned no image`)
-  return image
+  throw new Error(`${channelLabel} returned no image`)
 }
 
 function buildTaskHandleSafe(
@@ -722,6 +722,9 @@ function buildTaskHandleSafe(
   apiBase: string
 ): ImageTaskHandle | null {
   try {
+    const taskID = String(body.task_id || body.id || '').trim()
+    // 上游同步结果也可能带 task_id；只有本地任务或明确的轮询地址才能继续查询。
+    if (!taskID.startsWith('imgtask_') && !body.poll_url) return null
     return buildTaskHandle(body, apiBase)
   } catch {
     return null
