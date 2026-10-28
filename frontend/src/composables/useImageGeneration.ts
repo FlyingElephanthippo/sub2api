@@ -7,7 +7,7 @@ import {
   type ImageReference,
   type ImageResult,
 } from '@/api/imageGateway'
-import { archiveHistory } from '@/api/imageGenerations'
+import { saveLocalImage } from '@/utils/localImageHistory'
 import { resolveImageModel } from '@/constants/imageGen'
 
 export type ImageGenStatus = 'idle' | 'generating' | 'success' | 'error'
@@ -43,8 +43,8 @@ export interface GeneratedImage {
   model: string
   provider: string
   normalizedParams: unknown
-  /** 已写进服务端历史，卸载时可以不用再归档 */
-  serverArchived: boolean
+  /** 已保存到当前用户的浏览器历史。 */
+  localSaved: boolean
   apiKeyID?: number
   referenceSnapshot?: unknown
 }
@@ -192,7 +192,7 @@ export function useImageGeneration() {
       model: req.model,
       provider: spec.provider,
       normalizedParams: normalizedParamsFor(spec.provider, req),
-      serverArchived: false,
+      localSaved: false,
       apiKeyID: req.apiKeyID,
       referenceSnapshot: req.referenceSnapshot ?? req.references.map((reference, index) => ({
         index: index + 1,
@@ -322,18 +322,19 @@ export function useImageGeneration() {
   }
 
   /**
-   * 把生成的图片登记进服务端历史。归档失败只提示，不回滚：图片本来就已经拿到手了。
+   * 保存到本机浏览器；失败时保留生成结果供下载或重试。
    */
   async function archive(
     images: GeneratedImage[],
     options: {
+      userID: number
       apiKeyID?: number
       references: ImageReference[]
       referenceSnapshot?: unknown
       onError?: (error: unknown) => void
     }
   ): Promise<void> {
-    const pending = images.filter(image => !image.serverArchived)
+    const pending = images.filter(image => !image.localSaved)
     if (!pending.length) return
 
     const snapshot =
@@ -352,18 +353,21 @@ export function useImageGeneration() {
         archivingIDs.value.add(image.id)
         const saved = (async () => {
           try {
-            await archiveHistory({
-              api_key_id: image.apiKeyID ?? options.apiKeyID,
+            await saveLocalImage(options.userID, {
+              id: image.id,
+              blob: image.blob,
+              prompt: image.prompt,
+              timestamp: image.timestamp,
+              size: image.size,
+              format: image.format,
+              mimeType: image.mimeType,
+              extension: image.extension,
               model: image.model,
               provider: image.provider,
-              prompt: image.prompt,
-              content_type: image.mimeType,
-              normalized_params: image.normalizedParams,
-              reference_snapshot: image.referenceSnapshot ?? snapshot,
-              status: 'completed',
-              file: new File([image.blob], `${image.id}.${image.extension}`, { type: image.mimeType }),
+              normalizedParams: image.normalizedParams,
+              referenceSnapshot: image.referenceSnapshot ?? snapshot,
             })
-            image.serverArchived = true
+            image.localSaved = true
           } catch (error) {
             options.onError?.(error)
           } finally {

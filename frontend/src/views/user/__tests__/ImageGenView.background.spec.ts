@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '@/App.vue'
 import ImageGenView from '../ImageGenView.vue'
 import type { ImageGenerateRequest, ImageResult } from '@/api/imageGateway'
-import type { ImageGenerationArchivePayload, ImageGenerationHistoryItem } from '@/api/imageGenerations'
+import type { LocalImageHistoryInput, LocalImageHistoryRecord } from '@/utils/localImageHistory'
 
 const mocks = vi.hoisted(() => ({
   auth: { user: { id: 1 } as { id: number } | null, isAuthenticated: true, isAdmin: false },
@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   compliance: { fetchStatus: vi.fn(), requireAcknowledgement: vi.fn(), reset: vi.fn() },
   adminSettings: { customMenuItems: [] },
   generateImage: vi.fn(), archiveHistory: vi.fn(), listHistory: vi.fn(), listKeys: vi.fn(), listModels: vi.fn(),
+  saveLocalImage: vi.fn(), listLocalImages: vi.fn(), deleteLocalImage: vi.fn(),
   getCapabilities: vi.fn(), fetchHistoryContent: vi.fn(), estimate: vi.fn(), getSetupStatus: vi.fn(),
 }))
 
@@ -51,6 +52,11 @@ vi.mock('@/api/imageGateway', async importOriginal => ({
   ...await importOriginal<typeof import('@/api/imageGateway')>(),
   generateImage: mocks.generateImage,
 }))
+vi.mock('@/utils/localImageHistory', async importOriginal => ({
+  ...await importOriginal<typeof import('@/utils/localImageHistory')>(),
+  saveLocalImage: mocks.saveLocalImage, listLocalImages: mocks.listLocalImages,
+  deleteLocalImage: mocks.deleteLocalImage,
+}))
 
 const SelectStub = defineComponent({
   name: 'ImageSelectStub', props: ['modelValue', 'options', 'disabled', 'placeholder'],
@@ -74,7 +80,7 @@ const pngResult: ImageResult = { data: 'iVBORw0KGgo=', mimeType: 'image/png' }
 describe('ImageGenView background generation through the application router', () => {
   const wrappers: Array<ReturnType<typeof mount>> = []
   let requests: Array<{ request: ImageGenerateRequest; signal: AbortSignal; pending: ReturnType<typeof deferred<ImageResult>> }>
-  let history: ImageGenerationHistoryItem[]
+  let history: LocalImageHistoryRecord[]
   let nextURL = 0
 
   async function mountApp() {
@@ -122,15 +128,13 @@ describe('ImageGenView background generation through the application router', ()
       image_count: 1, billing_tier: '1k', rate_multiplier: 1 })
     mocks.listKeys.mockReset().mockImplementation(() => Promise.resolve({ items: [apiKey(1), apiKey(2)] }))
     mocks.listModels.mockReset().mockResolvedValue(['gpt-image-2'])
-    mocks.listHistory.mockReset().mockImplementation(() => Promise.resolve({ items: [...history], total: history.length }))
-    mocks.archiveHistory.mockReset().mockImplementation(async (payload: ImageGenerationArchivePayload) => {
-      const record: ImageGenerationHistoryItem = {
-        id: history.length + 1, model: payload.model, provider: payload.provider, prompt: payload.prompt,
-        content_type: 'image/png', size_bytes: 8, content_available: true, status: 'completed', created_at: '',
-      }
-      history.push(record)
-      return record
+    mocks.listHistory.mockReset().mockResolvedValue({ items: [], total: 0 })
+    mocks.archiveHistory.mockReset()
+    mocks.listLocalImages.mockReset().mockImplementation((userID: number) => Promise.resolve(history.filter(item => item.userID === userID)))
+    mocks.saveLocalImage.mockReset().mockImplementation(async (userID: number, payload: LocalImageHistoryInput) => {
+      history.push({ ...payload, userID })
     })
+    mocks.deleteLocalImage.mockReset().mockResolvedValue(undefined)
     mocks.generateImage.mockReset().mockImplementation((request: ImageGenerateRequest, signal: AbortSignal) => {
       const pending = deferred<ImageResult>()
       requests.push({ request, signal, pending })
@@ -140,6 +144,9 @@ describe('ImageGenView background generation through the application router', ()
   })
 
   afterEach(() => {
+    expect(mocks.archiveHistory).not.toHaveBeenCalled()
+    expect(mocks.listHistory).not.toHaveBeenCalled()
+    expect(mocks.fetchHistoryContent).not.toHaveBeenCalled()
     for (const wrapper of wrappers.splice(0)) wrapper.unmount()
     vi.useRealTimers()
     vi.restoreAllMocks()
@@ -163,7 +170,7 @@ describe('ImageGenView background generation through the application router', ()
     requests[0].pending.resolve(pngResult)
     await flushPromises()
     expect(wrapper.find('img[alt="A background teacup"]').exists()).toBe(true)
-    expect(mocks.archiveHistory).toHaveBeenCalledTimes(1)
+    expect(mocks.saveLocalImage).toHaveBeenCalledTimes(1)
   })
 
   it('finishes and archives while another page is visible and restores the completed image on return', async () => {
@@ -174,12 +181,12 @@ describe('ImageGenView background generation through the application router', ()
     await flushPromises()
 
     expect(wrapper.text()).toContain('Other page')
-    expect(mocks.archiveHistory).toHaveBeenCalledTimes(1)
+    expect(mocks.saveLocalImage).toHaveBeenCalledTimes(1)
     await router.push('/image-gen')
     await flushPromises()
     expect(wrapper.findAll('img[alt="A background teacup"]')).toHaveLength(2)
     expect(mocks.generateImage).toHaveBeenCalledTimes(1)
-    expect(mocks.archiveHistory).toHaveBeenCalledTimes(1)
+    expect(mocks.saveLocalImage).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).not.toContain('imageGen.status.generating')
   })
 
@@ -194,7 +201,7 @@ describe('ImageGenView background generation through the application router', ()
     await flushPromises()
 
     expect(mocks.generateImage).toHaveBeenCalledTimes(1)
-    expect(mocks.archiveHistory).not.toHaveBeenCalled()
+    expect(mocks.saveLocalImage).not.toHaveBeenCalled()
     expect(button(wrapper, 'imageGen.generate').attributes('disabled')).toBeUndefined()
     await button(wrapper, 'imageGen.generate').trigger('click')
     await flushPromises()
@@ -218,7 +225,7 @@ describe('ImageGenView background generation through the application router', ()
     for (const task of requests.slice(2)) task.pending.resolve(pngResult)
     await flushPromises()
     expect(requests.every(task => !task.signal.aborted)).toBe(true)
-    expect(mocks.archiveHistory).toHaveBeenCalledTimes(5)
+    expect(mocks.saveLocalImage).toHaveBeenCalledTimes(5)
     await router.push('/image-gen')
     await flushPromises()
 
@@ -227,7 +234,7 @@ describe('ImageGenView background generation through the application router', ()
     }
     expect(wrapper.text()).toContain('5 / 5')
     expect(mocks.generateImage).toHaveBeenCalledTimes(5)
-    expect(mocks.archiveHistory).toHaveBeenCalledTimes(5)
+    expect(mocks.saveLocalImage).toHaveBeenCalledTimes(5)
   })
 
   it.each(['logout', 'switch-account'] as const)('clears the old account task on %s and rejects its late result', async change => {
@@ -244,7 +251,7 @@ describe('ImageGenView background generation through the application router', ()
     expect(requests[0].signal.aborted).toBe(true)
     requests[0].pending.resolve(pngResult)
     await flushPromises()
-    expect(mocks.archiveHistory).not.toHaveBeenCalled()
+    expect(mocks.saveLocalImage).not.toHaveBeenCalled()
     expect(mocks.app.showSuccess).not.toHaveBeenCalled()
     expect(URL.createObjectURL).not.toHaveBeenCalled()
     if (change === 'logout') {
@@ -259,7 +266,7 @@ describe('ImageGenView background generation through the application router', ()
     expect(mocks.generateImage).toHaveBeenCalledTimes(1)
   })
 
-  it('archives a completed request under its original Key after the selector changes', async () => {
+  it('saves for the same signed-in user when the selected Key changes during generation', async () => {
     const { wrapper } = await mountApp()
     await startSingle(wrapper)
     wrapper.findAllComponents(SelectStub)[0].vm.$emit('update:modelValue', 2)
@@ -269,8 +276,27 @@ describe('ImageGenView background generation through the application router', ()
     await flushPromises()
 
     expect(requests[0].request.apiKey).toBe('sk-background-test-1')
-    expect(mocks.archiveHistory).toHaveBeenCalledTimes(1)
-    expect(mocks.archiveHistory).toHaveBeenCalledWith(expect.objectContaining({ api_key_id: 1 }))
+    expect(mocks.saveLocalImage).toHaveBeenCalledTimes(1)
+    expect(mocks.saveLocalImage).toHaveBeenCalledWith(1, expect.objectContaining({ prompt: 'A background teacup' }))
+  })
+
+  it.each(['resolve', 'reject'] as const)('keeps an old account local save isolated when it later %s', async outcome => {
+    const saving = deferred<void>()
+    mocks.saveLocalImage.mockReturnValueOnce(saving.promise)
+    const { wrapper } = await mountApp()
+    await startSingle(wrapper, 'Old account saved image')
+    requests[0].pending.resolve(pngResult)
+    await flushPromises()
+    expect(mocks.saveLocalImage).toHaveBeenCalledWith(1, expect.objectContaining({ prompt: 'Old account saved image' }))
+    mocks.auth.user = { id: 2 }
+    await flushPromises()
+    if (outcome === 'resolve') saving.resolve(undefined)
+    else saving.reject(new Error('private old account save error'))
+    await flushPromises()
+    expect(wrapper.find('img[alt="Old account saved image"]').exists()).toBe(false)
+    expect(mocks.saveLocalImage).toHaveBeenCalledOnce()
+    expect(mocks.app.showWarning).not.toHaveBeenCalled()
+    expect(mocks.listLocalImages).toHaveBeenLastCalledWith(2)
   })
 
   it('does not cancel an in-flight image when switching generation modes', async () => {
@@ -285,7 +311,7 @@ describe('ImageGenView background generation through the application router', ()
 
     expect(wrapper.find('img[alt="A background teacup"]').exists()).toBe(true)
     expect(mocks.generateImage).toHaveBeenCalledTimes(1)
-    expect(mocks.archiveHistory).toHaveBeenCalledTimes(1)
+    expect(mocks.saveLocalImage).toHaveBeenCalledTimes(1)
   })
 
   it('honors explicit cancellation and does not publish a late image after returning', async () => {
@@ -301,7 +327,7 @@ describe('ImageGenView background generation through the application router', ()
 
     expect(wrapper.find('img[alt="A background teacup"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('imageGen.status.generating')
-    expect(mocks.archiveHistory).not.toHaveBeenCalled()
+    expect(mocks.saveLocalImage).not.toHaveBeenCalled()
     expect(mocks.app.showSuccess).not.toHaveBeenCalled()
     expect(URL.createObjectURL).not.toHaveBeenCalled()
     expect(button(wrapper, 'imageGen.generate').attributes('disabled')).toBeUndefined()
@@ -321,7 +347,7 @@ describe('ImageGenView background generation through the application router', ()
 
     expect(requests).toHaveLength(3)
     expect(requests.every(task => task.signal.aborted)).toBe(true)
-    expect(mocks.archiveHistory).not.toHaveBeenCalled()
+    expect(mocks.saveLocalImage).not.toHaveBeenCalled()
     expect(mocks.app.showSuccess).not.toHaveBeenCalled()
     expect(URL.createObjectURL).not.toHaveBeenCalled()
   })
@@ -336,7 +362,7 @@ describe('ImageGenView background generation through the application router', ()
 
     expect(requests[0].signal.aborted).toBe(true)
     expect(wrapper.find('img[alt="Private visible account prompt"]').exists()).toBe(false)
-    expect(mocks.archiveHistory).not.toHaveBeenCalled()
+    expect(mocks.saveLocalImage).not.toHaveBeenCalled()
     expect(mocks.app.showSuccess).not.toHaveBeenCalled()
     expect(URL.createObjectURL).not.toHaveBeenCalled()
   })
@@ -376,47 +402,46 @@ describe('ImageGenView background generation through the application router', ()
     requests[0].pending.resolve(pngResult)
     await flushPromises()
 
-    expect(mocks.archiveHistory).toHaveBeenCalledTimes(1)
-    expect(mocks.archiveHistory).toHaveBeenCalledWith(expect.objectContaining({
-      api_key_id: 1,
-      reference_snapshot: [expect.objectContaining({ name: 'original-reference.png', content_type: 'image/png' })],
+    expect(mocks.saveLocalImage).toHaveBeenCalledTimes(1)
+    expect(mocks.saveLocalImage).toHaveBeenCalledWith(1, expect.objectContaining({
+      referenceSnapshot: [expect.objectContaining({ name: 'original-reference.png', content_type: 'image/png' })],
     }))
   })
 
   it('keeps a failed save available for one explicit retry and disables the button while uploading', async () => {
-    const firstSave = deferred<ImageGenerationHistoryItem>()
-    const retrySave = deferred<ImageGenerationHistoryItem>()
-    mocks.archiveHistory.mockReturnValueOnce(firstSave.promise).mockReturnValueOnce(retrySave.promise)
+    const firstSave = deferred<void>()
+    const retrySave = deferred<void>()
+    mocks.saveLocalImage.mockReturnValueOnce(firstSave.promise).mockReturnValueOnce(retrySave.promise)
     const { wrapper } = await mountApp()
     await startSingle(wrapper)
     requests[0].pending.resolve(pngResult)
     await flushPromises()
-    expect(mocks.archiveHistory).toHaveBeenCalledTimes(1)
+    expect(mocks.saveLocalImage).toHaveBeenCalledTimes(1)
     expect(button(wrapper, 'imageGen.history.archiving').attributes('disabled')).toBeDefined()
     await button(wrapper, 'imageGen.history.archiving').trigger('click')
-    expect(mocks.archiveHistory).toHaveBeenCalledTimes(1)
+    expect(mocks.saveLocalImage).toHaveBeenCalledTimes(1)
 
     firstSave.reject({ status: 400, code: 400, reason: 'IMAGE_GENERATION_HISTORY_UPLOAD_INCOMPLETE',
       message: 'private database_password=secret' })
     await flushPromises()
-    expect(mocks.app.showWarning).toHaveBeenCalledWith('imageGen.history.archiveUploadIncomplete imageGen.history.archiveRetry')
+    expect(mocks.app.showWarning).toHaveBeenCalledWith('imageGen.history.localSaveFailed')
     expect(wrapper.find('img[alt="A background teacup"]').exists()).toBe(true)
     expect(button(wrapper, 'imageGen.longStorage').attributes('disabled')).toBeUndefined()
-    expect(mocks.archiveHistory).toHaveBeenCalledTimes(1)
+    expect(mocks.saveLocalImage).toHaveBeenCalledTimes(1)
     await button(wrapper, 'imageGen.longStorage').trigger('click')
-    expect(mocks.archiveHistory).toHaveBeenCalledTimes(2)
+    expect(mocks.saveLocalImage).toHaveBeenCalledTimes(2)
     expect(button(wrapper, 'imageGen.history.archiving').attributes('disabled')).toBeDefined()
-    retrySave.resolve({ id: 1 } as ImageGenerationHistoryItem)
+    retrySave.resolve(undefined)
     await flushPromises()
 
-    expect(mocks.archiveHistory).toHaveBeenCalledTimes(2)
+    expect(mocks.saveLocalImage).toHaveBeenCalledTimes(2)
     expect(wrapper.findAll('button').some(item => item.text() === 'imageGen.longStorage')).toBe(false)
     expect(wrapper.findAll('button').some(item => item.text() === 'imageGen.history.archiving')).toBe(false)
     expect(mocks.app.showWarning).toHaveBeenCalledTimes(1)
   })
 
   it('provides a storage retry for a failed batch archive without regenerating the image', async () => {
-    mocks.archiveHistory.mockRejectedValueOnce({ status: 0, code: 'ECONNABORTED', message: 'unsafe raw detail' })
+    mocks.saveLocalImage.mockRejectedValueOnce({ status: 0, code: 'ECONNABORTED', message: 'unsafe raw detail' })
     const { wrapper } = await mountApp()
     await button(wrapper, 'imageGen.tabBatch').trigger('click')
     await wrapper.get('textarea').setValue('First save fails\nSecond save succeeds')
@@ -425,13 +450,13 @@ describe('ImageGenView background generation through the application router', ()
     for (const task of requests) task.pending.resolve(pngResult)
     await flushPromises()
 
-    expect(mocks.archiveHistory).toHaveBeenCalledTimes(2)
-    expect(mocks.app.showWarning).toHaveBeenCalledWith('imageGen.history.archiveTimeout imageGen.history.archiveRetry')
+    expect(mocks.saveLocalImage).toHaveBeenCalledTimes(2)
+    expect(mocks.app.showWarning).toHaveBeenCalledWith('imageGen.history.localSaveFailed')
     expect(wrapper.findAll('button').filter(item => item.text() === 'imageGen.longStorage')).toHaveLength(1)
     await button(wrapper, 'imageGen.longStorage').trigger('click')
     await flushPromises()
 
-    expect(mocks.archiveHistory).toHaveBeenCalledTimes(3)
+    expect(mocks.saveLocalImage).toHaveBeenCalledTimes(3)
     expect(mocks.generateImage).toHaveBeenCalledTimes(2)
     expect(wrapper.findAll('button').some(item => item.text() === 'imageGen.longStorage')).toBe(false)
   })

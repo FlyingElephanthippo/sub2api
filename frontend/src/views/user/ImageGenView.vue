@@ -4,9 +4,7 @@
       <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 class="text-2xl font-bold text-gray-900 dark:text-white">{{ pageTitle }}</h1>
-          <p v-if="historyRetentionDays" class="mt-2 flex gap-4 text-sm text-gray-500 dark:text-gray-400">
-            <span>{{ t('imageGen.history.retention', { days: historyRetentionDays }) }}</span>
-          </p>
+          <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">{{ t('imageGen.history.localNotice', { count: LOCAL_IMAGE_HISTORY_LIMIT, size: LOCAL_IMAGE_HISTORY_MAX_BYTES / (1024 * 1024) }) }}</p>
         </div>
         <div class="flex min-w-0 flex-wrap items-center gap-2">
           <label class="input-label whitespace-nowrap text-sm">{{ t('imageGen.apiKey') }}</label>
@@ -278,7 +276,7 @@
                     {{ t('imageGen.download') }}
                   </button>
                   <button
-                    v-if="!item.result.serverArchived"
+                    v-if="!item.result.localSaved"
                     type="button"
                     class="btn btn-secondary btn-sm"
                     :disabled="isArchiving(item.result)"
@@ -302,7 +300,7 @@
                   {{ t('imageGen.clear') }}
                 </button>
                 <button
-                  v-if="!currentResult.serverArchived"
+                  v-if="!currentResult.localSaved"
                   type="button"
                   class="btn btn-secondary btn-sm"
                   :disabled="isArchiving(currentResult)"
@@ -319,7 +317,7 @@
             </div>
           </div>
 
-          <div v-if="historyEnabled" class="card mt-6 space-y-4 p-5">
+          <div class="card mt-6 space-y-4 p-5">
             <div class="flex items-center justify-between">
               <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t('imageGen.history.title') }}
@@ -346,8 +344,7 @@
                   @error="historyPreviewFailed(item.id)"
                 />
                 <div v-else class="flex h-28 w-full items-center justify-center bg-gray-100 px-2 text-center text-xs text-gray-400 dark:bg-dark-800">
-                  <template v-if="!item.content_available">{{ t('imageGen.history.expired') }}</template>
-                  <template v-else-if="historyPreviewErrors[item.id]">{{ t('imageGen.history.loadFailed') }}</template>
+                  <template v-if="historyPreviewErrors[item.id]">{{ t('imageGen.history.loadFailed') }}</template>
                   <template v-else>{{ t('common.loading') }}</template>
                 </div>
                 <div class="flex items-center justify-between gap-1 px-2 py-1 text-xs">
@@ -356,7 +353,7 @@
                     <a
                       v-if="historyThumb(item.id)"
                       :href="historyThumb(item.id)"
-                      :download="`image-${item.id}`"
+                      :download="`image-${item.id}.${item.extension}`"
                       class="text-gray-500 hover:text-gray-700"
                     >
                       {{ t('imageGen.download') }}
@@ -364,13 +361,38 @@
                     <button type="button" class="text-gray-500 hover:text-gray-700" @click="reuse(item)">
                       {{ t('imageGen.history.reuse') }}
                     </button>
-                    <button type="button" class="text-red-500 hover:text-red-600" @click="removeHistory(item.id)">
+                    <button type="button" class="text-red-500 hover:text-red-600" :title="t('imageGen.history.deleteLocal')" :aria-label="t('imageGen.history.deleteLocal')" @click="removeHistory(item.id)">
                       ×
                     </button>
                   </div>
                 </div>
               </div>
             </div>
+            <details :open="cloudHistoryOpen" @toggle="toggleCloudHistory">
+              <summary class="cursor-pointer text-sm text-gray-500 dark:text-gray-400">{{ t('imageGen.history.cloudTitle') }}</summary>
+              <div v-if="cloudHistoryOpen" class="mt-4 space-y-3">
+                <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('imageGen.history.cloudNotice') }}</p>
+                <button type="button" class="btn btn-secondary btn-sm" @click="loadCloudHistory">{{ t('imageGen.history.reload') }}</button>
+                <p v-if="cloudHistoryError" class="text-sm text-red-600 dark:text-red-400">{{ cloudHistoryError }}</p>
+                <p v-else-if="cloudHistoryLoading" class="text-sm text-gray-500">{{ t('common.loading') }}</p>
+                <p v-else-if="!cloudHistory.length" class="text-sm text-gray-500">{{ t('imageGen.history.cloudEmpty') }}</p>
+                <div v-else class="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  <div v-for="item in cloudHistory" :key="item.id" class="group relative overflow-hidden rounded-lg border border-gray-200 dark:border-dark-700">
+                    <img v-if="cloudHistoryPreviewUrls[item.id]" :src="cloudHistoryPreviewUrls[item.id]" :alt="item.prompt" class="h-28 w-full object-cover" @error="cloudPreviewFailed(item.id)" />
+                    <div v-else class="flex h-28 items-center justify-center bg-gray-100 px-2 text-center text-xs text-gray-400 dark:bg-dark-800">
+                      {{ t(!item.content_available ? 'imageGen.history.expired' : cloudHistoryPreviewErrors[item.id] ? 'imageGen.history.loadFailed' : 'common.loading') }}
+                    </div>
+                    <div class="flex items-center justify-between gap-1 px-2 py-1 text-xs">
+                      <span class="truncate text-gray-500">{{ item.model }}</span>
+                      <div class="flex gap-2">
+                        <a v-if="cloudHistoryPreviewUrls[item.id]" :href="cloudHistoryPreviewUrls[item.id]" :download="`image-${item.id}`">{{ t('imageGen.download') }}</a>
+                        <button type="button" class="text-red-500" :title="t('imageGen.history.deleteCloud')" :aria-label="t('imageGen.history.deleteCloud')" @click="removeCloudHistory(item.id)">×</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </details>
           </div>
         </div>
       </div>
@@ -392,7 +414,6 @@ import {
   deleteHistory,
   estimate as estimateImage,
   fetchHistoryContent,
-  getCapabilities,
   listHistory,
   listModels,
   type ImageGenerationEstimate,
@@ -419,7 +440,7 @@ import {
 } from '@/composables/useImageGeneration'
 import type { ApiKey } from '@/types'
 import { extractApiErrorCode } from '@/utils/apiError'
-import { imageGenerationArchiveErrorMessage } from '@/utils/imageGenerationArchiveError'
+import { deleteLocalImage, listLocalImages, LOCAL_IMAGE_HISTORY_LIMIT, LOCAL_IMAGE_HISTORY_MAX_BYTES, type LocalImageHistoryRecord } from '@/utils/localImageHistory'
 
 const props = withDefaults(
   defineProps<{
@@ -494,12 +515,17 @@ const imageSize = ref(IMAGE_GEN_DEFAULTS.imageSize)
 const references = ref<ReferenceItem[]>([])
 const promptRef = ref<HTMLTextAreaElement | null>(null)
 
-const historyEnabled = ref(false)
-const historyRetentionDays = ref(0)
-const history = ref<ImageGenerationHistoryItem[]>([])
+const history = ref<LocalImageHistoryRecord[]>([])
 const historyError = ref('')
-const historyPreviewUrls = ref<Record<number, string>>({})
-const historyPreviewErrors = ref<Record<number, boolean>>({})
+const historyPreviewUrls = ref<Record<string, string>>({})
+const historyPreviewErrors = ref<Record<string, boolean>>({})
+const cloudHistoryOpen = ref(false)
+const cloudHistory = ref<ImageGenerationHistoryItem[]>([])
+const cloudHistoryError = ref('')
+const cloudHistoryLoading = ref(false)
+const cloudHistoryPreviewUrls = ref<Record<number, string>>({})
+const cloudHistoryPreviewErrors = ref<Record<number, boolean>>({})
+let cloudLoadToken = 0
 const estimate = ref<ImageGenerationEstimate | null>(null)
 const estimating = ref(false)
 const estimateError = ref('')
@@ -518,8 +544,27 @@ let submissionToken = 0
 
 watch(() => authStore.isAuthenticated ? authStore.user?.id : null, () => {
   generationSession += 1
+  loadToken += 1
+  cloudLoadToken += 1
+  keyLoadToken += 1
   cancelGeneration()
   clearAllResults()
+  clearReferences()
+  prompt.value = ''
+  batchPromptsText.value = ''
+  for (const id of Object.keys(historyPreviewUrls.value)) releaseHistoryPreview(id)
+  for (const id of Object.keys(cloudHistoryPreviewUrls.value).map(Number)) releaseCloudPreview(id)
+  history.value = []
+  historyError.value = ''
+  cloudHistory.value = []
+  cloudHistoryError.value = ''
+  cloudHistoryOpen.value = false
+  keys.value = []
+  selectedKeyID.value = ''
+  if (authStore.isAuthenticated && authStore.user?.id) {
+    void loadKeys()
+    void loadHistory()
+  }
 }, { flush: 'sync' })
 
 const provider = computed(() => resolveImageModel(model.value).provider)
@@ -598,18 +643,18 @@ function formatCost(value: number): string {
   return Number(value || 0).toFixed(6).replace(/\.?0+$/, '') || '0'
 }
 
-function historyThumb(id: number): string {
+function historyThumb(id: string): string {
   return historyPreviewUrls.value[id] || ''
 }
 
-function releaseHistoryPreview(id: number): void {
+function releaseHistoryPreview(id: string): void {
   const url = historyPreviewUrls.value[id]
   if (url?.startsWith('blob:')) URL.revokeObjectURL(url)
   delete historyPreviewUrls.value[id]
   delete historyPreviewErrors.value[id]
 }
 
-function historyPreviewFailed(id: number): void {
+function historyPreviewFailed(id: string): void {
   releaseHistoryPreview(id)
   historyPreviewErrors.value[id] = true
 }
@@ -682,49 +727,83 @@ async function loadModels(): Promise<void> {
 }
 
 async function loadHistory(): Promise<void> {
-  if (!historyEnabled.value || disposed) return
+  const userID = authStore.isAuthenticated ? authStore.user?.id : undefined
+  if (!userID || disposed) return
   historyError.value = ''
   const token = ++loadToken
   try {
-    const response = await listHistory(1, 24)
-    if (token !== loadToken) return
-    history.value = response.items || []
-    const availableIDs = new Set(history.value.filter(item => item.content_available).map(item => item.id))
-    for (const id of Object.keys(historyPreviewUrls.value).map(Number)) {
+    const records = await listLocalImages(userID)
+    if (disposed || token !== loadToken || userID !== authStore.user?.id || !authStore.isAuthenticated) return
+    history.value = records
+    const availableIDs = new Set(records.map(item => item.id))
+    for (const id of Object.keys(historyPreviewUrls.value)) {
       if (!availableIDs.has(id)) releaseHistoryPreview(id)
     }
+    for (const id of Object.keys(historyPreviewErrors.value)) releaseHistoryPreview(id)
     historyPreviewErrors.value = {}
-    await Promise.all(history.value.filter(item => item.content_available && !historyThumb(item.id)).map(async item => {
+    for (const item of records) {
+      if (!historyThumb(item.id)) historyPreviewUrls.value[item.id] = URL.createObjectURL(item.blob)
+    }
+  } catch {
+    if (disposed || token !== loadToken) return
+    historyError.value = t('imageGen.history.localLoadFailed')
+  }
+}
+
+function releaseCloudPreview(id: number): void {
+  const url = cloudHistoryPreviewUrls.value[id]
+  if (url?.startsWith('blob:')) URL.revokeObjectURL(url)
+  delete cloudHistoryPreviewUrls.value[id]
+  delete cloudHistoryPreviewErrors.value[id]
+}
+
+function cloudPreviewFailed(id: number): void {
+  releaseCloudPreview(id)
+  cloudHistoryPreviewErrors.value[id] = true
+}
+
+function toggleCloudHistory(event: Event): void {
+  cloudHistoryOpen.value = (event.target as HTMLDetailsElement).open
+  if (cloudHistoryOpen.value) void loadCloudHistory()
+  else cloudLoadToken += 1
+}
+
+async function loadCloudHistory(): Promise<void> {
+  const userID = authStore.isAuthenticated ? authStore.user?.id : undefined
+  if (!cloudHistoryOpen.value || !userID || disposed) return
+  const token = ++cloudLoadToken
+  cloudHistoryError.value = ''
+  cloudHistoryLoading.value = true
+  const current = () => !disposed && token === cloudLoadToken && userID === authStore.user?.id && authStore.isAuthenticated
+  try {
+    const response = await listHistory(1, 24)
+    if (!current()) return
+    cloudHistory.value = response.items || []
+    const availableIDs = new Set(cloudHistory.value.filter(item => item.content_available).map(item => item.id))
+    for (const id of Object.keys(cloudHistoryPreviewUrls.value).map(Number)) {
+      if (!availableIDs.has(id) || cloudHistoryPreviewErrors.value[id]) releaseCloudPreview(id)
+    }
+    cloudHistoryPreviewErrors.value = {}
+    await Promise.all(cloudHistory.value.filter(item => item.content_available && !cloudHistoryPreviewUrls.value[item.id]).map(async item => {
       try {
-        // 面板图片接口需要 JWT，必须通过 apiClient 取回后再交给 img 展示。
         const blob = await fetchHistoryContent(item.id)
-        if (token !== loadToken || !history.value.some(record => record.id === item.id)) return
-        historyPreviewUrls.value[item.id] = URL.createObjectURL(blob)
+        if (!current() || !cloudHistory.value.some(record => record.id === item.id)) return
+        cloudHistoryPreviewUrls.value[item.id] = URL.createObjectURL(blob)
       } catch (error) {
-        if (token !== loadToken || !history.value.some(record => record.id === item.id)) return
+        if (!current() || !cloudHistory.value.some(record => record.id === item.id)) return
         const externalUrl = historyContentMissing(error) ? safeHistoryExternalUrl(item.content_url) : ''
-        if (externalUrl) {
-          // External images load directly; the panel JWT must never be sent to their host.
-          historyPreviewUrls.value[item.id] = externalUrl
-        } else {
-          historyPreviewErrors.value[item.id] = true
-        }
+        if (externalUrl) cloudHistoryPreviewUrls.value[item.id] = externalUrl
+        else cloudHistoryPreviewErrors.value[item.id] = true
       }
     }))
   } catch {
-    if (token !== loadToken) return
-    historyError.value = t('imageGen.history.loadFailed')
+    if (current()) cloudHistoryError.value = t('imageGen.history.loadFailed')
+  } finally {
+    if (current()) cloudHistoryLoading.value = false
   }
 }
 
 async function bootstrap(): Promise<void> {
-  try {
-    const capabilities = await getCapabilities()
-    historyEnabled.value = capabilities.history_enabled
-    historyRetentionDays.value = capabilities.retention_days || 0
-  } catch {
-    historyEnabled.value = false
-  }
   await loadKeys()
   await loadHistory()
   await modelLoadPromise
@@ -912,6 +991,8 @@ async function submit(): Promise<void> {
   const request = buildRequest()
   if (!request) return
   const session = generationSession
+  const userID = authStore.isAuthenticated ? authStore.user?.id : undefined
+  if (!userID) return
   const submission = ++submissionToken
   const image = await generate(request)
   if (disposed || session !== generationSession || submission !== submissionToken) return
@@ -922,8 +1003,7 @@ async function submit(): Promise<void> {
     return
   }
   appStore.showSuccess(t('imageGen.success'))
-  await archiveResults([image], request)
-  await loadHistory()
+  await archiveResults([image], request, userID)
 }
 
 async function submitBatch(): Promise<void> {
@@ -931,6 +1011,8 @@ async function submitBatch(): Promise<void> {
   const request = buildRequest()
   if (!request) return
   const session = generationSession
+  const userID = authStore.isAuthenticated ? authStore.user?.id : undefined
+  if (!userID) return
   const submission = ++submissionToken
   await generateBatch({
     ...request,
@@ -945,23 +1027,25 @@ async function submitBatch(): Promise<void> {
   const results = batchItems.value.map(item => item.result).filter((item): item is GeneratedImage => !!item)
   if (!results.length) return
   if (status.value === 'success') appStore.showSuccess(t('imageGen.success'))
-  await archiveResults(results, request)
-  await loadHistory()
+  await archiveResults(results, request, userID)
 }
 
-async function archiveResults(images: GeneratedImage[], request?: ImageGenRequest): Promise<void> {
-  if (!images.length) return
+async function archiveResults(images: GeneratedImage[], request?: ImageGenRequest, ownerID?: number): Promise<void> {
+  const userID = ownerID ?? (authStore.isAuthenticated ? authStore.user?.id : undefined)
+  if (!images.length || !userID || userID !== authStore.user?.id || !authStore.isAuthenticated) return
   const session = generationSession
   await archive(images, {
+    userID,
     apiKeyID: request?.apiKeyID,
     references: request?.references ?? [],
     referenceSnapshot: request?.referenceSnapshot,
-    onError: error => {
+    onError: () => {
       if (!disposed && session === generationSession) {
-        appStore.showWarning(imageGenerationArchiveErrorMessage(error, t))
+        appStore.showWarning(t('imageGen.history.localSaveFailed'))
       }
     },
   })
+  if (!disposed && session === generationSession) await loadHistory()
 }
 
 /* ---------------------------------- 结果操作 -------------------------------- */
@@ -979,12 +1063,12 @@ function clearResult(): void {
   clearAllResults()
 }
 
-async function reuse(item: ImageGenerationHistoryItem): Promise<void> {
+function reuse(item: LocalImageHistoryRecord): void {
   if (!modelOptions.value.some(option => option.value === item.model)) {
     appStore.showWarning(t('imageGen.modelUnavailable'))
     return
   }
-  const params = (item.normalized_params || {}) as Record<string, unknown>
+  const params = (item.normalizedParams || {}) as Record<string, unknown>
   model.value = item.model
   if (typeof params.size === 'string') size.value = params.size
   if (typeof params.quality === 'string') quality.value = params.quality
@@ -996,38 +1080,36 @@ async function reuse(item: ImageGenerationHistoryItem): Promise<void> {
   prompt.value = item.prompt
 
   clearReferences()
-  const snapshot = Array.isArray(item.reference_snapshot) ? item.reference_snapshot : []
-  let expired = 0
-  for (const entry of snapshot as Array<Record<string, unknown>>) {
-    try {
-      const blob = await fetchHistoryContent(Number(entry.history_id || item.id))
-      const previewUrl = URL.createObjectURL(blob)
-      references.value.push({
-        id: `history-${item.id}-${references.value.length + 1}`,
-        index: references.value.length + 1,
-        name: String(entry.name || t('imageGen.referenceImage')),
-        previewUrl,
-        mimeType: String(entry.content_type || blob.type || 'image/png'),
-        sizeBytes: Number(entry.size_bytes || blob.size || 0),
-        uploadStatus: 'ready',
-      })
-    } catch {
-      expired += 1
-    }
-  }
-  if (expired) appStore.showWarning(t('imageGen.history.referencesExpired', { count: expired }))
-  activeTab.value = references.value.length ? 'edit' : 'generate'
+  const snapshot = Array.isArray(item.referenceSnapshot) ? item.referenceSnapshot : []
+  if (snapshot.length) appStore.showWarning(t('imageGen.history.referencesReupload'))
+  activeTab.value = snapshot.length ? 'edit' : 'generate'
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
-async function removeHistory(id: number): Promise<void> {
+async function removeHistory(id: string): Promise<void> {
+  const userID = authStore.isAuthenticated ? authStore.user?.id : undefined
+  if (!userID) return
   if (!window.confirm(t('imageGen.history.deleteConfirm'))) return
   try {
-    await deleteHistory(id)
+    await deleteLocalImage(userID, id)
+    if (!authStore.isAuthenticated || userID !== authStore.user?.id) return
     history.value = history.value.filter(item => item.id !== id)
     releaseHistoryPreview(id)
   } catch {
     appStore.showError(t('imageGen.history.deleteFailed'))
+  }
+}
+
+async function removeCloudHistory(id: number): Promise<void> {
+  const userID = authStore.isAuthenticated ? authStore.user?.id : undefined
+  if (!userID || !window.confirm(t('imageGen.history.cloudDeleteConfirm'))) return
+  try {
+    await deleteHistory(id)
+    if (!authStore.isAuthenticated || userID !== authStore.user?.id) return
+    cloudHistory.value = cloudHistory.value.filter(item => item.id !== id)
+    releaseCloudPreview(id)
+  } catch {
+    if (userID === authStore.user?.id) appStore.showError(t('imageGen.history.deleteFailed'))
   }
 }
 
@@ -1054,7 +1136,9 @@ onUnmounted(() => {
   keyLoadToken += 1
   modelLoadToken += 1
   modelController?.abort()
-  for (const id of Object.keys(historyPreviewUrls.value).map(Number)) releaseHistoryPreview(id)
+  cloudLoadToken += 1
+  for (const id of Object.keys(historyPreviewUrls.value)) releaseHistoryPreview(id)
+  for (const id of Object.keys(cloudHistoryPreviewUrls.value).map(Number)) releaseCloudPreview(id)
   if (estimateTimer) clearTimeout(estimateTimer)
   estimateController?.abort()
   cancelGeneration()
