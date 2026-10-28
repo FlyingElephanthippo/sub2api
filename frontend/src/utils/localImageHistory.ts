@@ -1,4 +1,5 @@
 export const LOCAL_IMAGE_HISTORY_LIMIT = 100
+export const LOCAL_IMAGE_HISTORY_MAX_BYTES = 200 * 1024 * 1024
 
 export interface LocalImageHistoryInput {
   id: string
@@ -98,11 +99,22 @@ function newestFirst(left: LocalImageHistoryRecord, right: LocalImageHistoryReco
   return right.timestamp - left.timestamp || left.id.localeCompare(right.id)
 }
 
+function metadataSnapshot(value: unknown): unknown {
+  // Batch results are reactive Vue objects; IndexedDB cannot clone their proxies.
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value))
+}
+
 /** Persist only image bytes and display metadata; never the request, API key or object URL. */
 export async function saveLocalImage(userID: number, image: LocalImageHistoryInput): Promise<void> {
   validateUser(userID)
   if (!image.id || !Number.isFinite(image.timestamp)) {
     throw new Error('Local image history requires an image ID and timestamp.')
+  }
+  if (!image.blob || !Number.isFinite(image.blob.size) || image.blob.size <= 0) {
+    throw new Error('Local image history requires a non-empty image.')
+  }
+  if (image.blob.size > LOCAL_IMAGE_HISTORY_MAX_BYTES) {
+    throw new DOMException('This image exceeds the local history storage limit.', 'QuotaExceededError')
   }
   const record: LocalImageHistoryRecord = {
     userID,
@@ -116,16 +128,34 @@ export async function saveLocalImage(userID: number, image: LocalImageHistoryInp
     extension: image.extension,
     model: image.model,
     provider: image.provider,
-    normalizedParams: image.normalizedParams,
-    referenceSnapshot: image.referenceSnapshot,
+    normalizedParams: metadataSnapshot(image.normalizedParams),
+    referenceSnapshot: metadataSnapshot(image.referenceSnapshot),
   }
   await transact('readwrite', undefined, store => {
-    store.put(record)
     const request = store.index(USER_INDEX).getAll(userID)
     request.onsuccess = () => {
-      const images = request.result as LocalImageHistoryRecord[]
-      for (const expired of images.sort(newestFirst).slice(LOCAL_IMAGE_HISTORY_LIMIT)) {
-        store.delete([userID, expired.id])
+      const existing = request.result as LocalImageHistoryRecord[]
+      const images = [...existing.filter(item => item.id !== record.id), record].sort(newestFirst)
+      const keep = new Set<string>()
+      let bytes = 0
+      for (const item of images) {
+        if (keep.size >= LOCAL_IMAGE_HISTORY_LIMIT || bytes + item.blob.size > LOCAL_IMAGE_HISTORY_MAX_BYTES) break
+        keep.add(item.id)
+        bytes += item.blob.size
+      }
+      if (!keep.has(record.id)) {
+        // A restored older result must not silently disappear after a successful save.
+        store.transaction.abort()
+        return
+      }
+      for (const item of existing) {
+        if (!keep.has(item.id)) store.delete([userID, item.id])
+      }
+      try {
+        // Evictions and the replacement commit together; quota failure preserves old history.
+        store.put(record)
+      } catch {
+        store.transaction.abort()
       }
     }
   })

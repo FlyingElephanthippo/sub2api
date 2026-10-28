@@ -4,9 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useImageGeneration, type ImageGenRequest } from '../useImageGeneration'
 import type { ImageGenerateRequest, ImageResult } from '@/api/imageGateway'
 
-const { generateImage, archiveHistory, createObjectURL, revokeObjectURL } = vi.hoisted(() => ({
+const { generateImage, saveLocalImage, createObjectURL, revokeObjectURL } = vi.hoisted(() => ({
   generateImage: vi.fn<(request: ImageGenerateRequest, signal: AbortSignal) => Promise<ImageResult>>(),
-  archiveHistory: vi.fn(),
+  saveLocalImage: vi.fn(),
   createObjectURL: vi.fn(),
   revokeObjectURL: vi.fn(),
 }))
@@ -17,7 +17,7 @@ vi.mock('@/api/imageGateway', () => ({
   describeTaskError: vi.fn(),
   restorePendingTasks: vi.fn(),
 }))
-vi.mock('@/api/imageGenerations', () => ({ archiveHistory }))
+vi.mock('@/utils/localImageHistory', () => ({ saveLocalImage }))
 
 const pngResult: ImageResult = { data: 'iVBORw0KGgo=', mimeType: 'image/png' }
 
@@ -39,7 +39,7 @@ function request(overrides: Partial<ImageGenRequest> = {}): ImageGenRequest {
 describe('image generation request lifetime and archive snapshots', () => {
   beforeEach(() => {
     generateImage.mockReset()
-    archiveHistory.mockReset().mockResolvedValue({ id: 1 })
+    saveLocalImage.mockReset().mockResolvedValue(undefined)
     createObjectURL.mockReset().mockImplementation(() => `blob:image-${createObjectURL.mock.calls.length}`)
     revokeObjectURL.mockReset()
     vi.stubGlobal('URL', { createObjectURL, revokeObjectURL })
@@ -126,7 +126,7 @@ describe('image generation request lifetime and archive snapshots', () => {
     expect(generation.progress.value).toBe('')
   })
 
-  it('archives a completed single image using its original Key and reference snapshot', async () => {
+  it('saves completed image bytes and its original reference metadata for the signed-in user', async () => {
     const referenceSnapshot = [{ index: 1, name: 'original.png', content_type: 'image/png', size_bytes: 42 }]
     generateImage.mockResolvedValue(pngResult)
     const generation = useImageGeneration()
@@ -134,17 +134,21 @@ describe('image generation request lifetime and archive snapshots', () => {
     expect(image).not.toBeNull()
 
     await generation.archive([image!], {
-      apiKeyID: 22, references: [],
+      userID: 7, apiKeyID: 22, references: [],
       referenceSnapshot: [{ index: 1, name: 'replacement.png' }],
     })
 
-    expect(archiveHistory).toHaveBeenCalledOnce()
-    expect(archiveHistory.mock.calls[0][0]).toMatchObject({
-      api_key_id: 11, reference_snapshot: referenceSnapshot, prompt: 'a cup',
-      model: 'gpt-image-2', content_type: 'image/png',
+    expect(saveLocalImage).toHaveBeenCalledOnce()
+    expect(saveLocalImage.mock.calls[0][0]).toBe(7)
+    expect(saveLocalImage.mock.calls[0][1]).toMatchObject({
+      id: image!.id, referenceSnapshot, prompt: 'a cup',
+      model: 'gpt-image-2', mimeType: 'image/png',
     })
-    expect(archiveHistory.mock.calls[0][0].file).toBeInstanceOf(File)
-    expect(image!.serverArchived).toBe(true)
+    expect(saveLocalImage.mock.calls[0][1].blob).toBe(image!.blob)
+    expect(saveLocalImage.mock.calls[0][1]).not.toHaveProperty('apiKey')
+    expect(saveLocalImage.mock.calls[0][1]).not.toHaveProperty('apiKeyID')
+    expect(saveLocalImage.mock.calls[0][1]).not.toHaveProperty('blobUrl')
+    expect(image!.localSaved).toBe(true)
   })
 
   it('snapshots original reference metadata when no explicit snapshot was supplied', async () => {
@@ -154,13 +158,12 @@ describe('image generation request lifetime and archive snapshots', () => {
       { id: 'ref-original', name: 'original.webp', mimeType: 'image/webp', dataUrl: 'data:image/webp;base64,AA==' },
     ] }))
 
-    await generation.archive([image!], { apiKeyID: 22, references: [
+    await generation.archive([image!], { userID: 7, apiKeyID: 22, references: [
       { id: 'ref-new', name: 'replacement.png', mimeType: 'image/png' },
     ] })
 
-    expect(archiveHistory.mock.calls[0][0]).toMatchObject({
-      api_key_id: 11,
-      reference_snapshot: [{ index: 1, name: 'original.webp', content_type: 'image/webp' }],
+    expect(saveLocalImage.mock.calls[0][1]).toMatchObject({
+      referenceSnapshot: [{ index: 1, name: 'original.webp', content_type: 'image/webp' }],
     })
   })
 
@@ -173,16 +176,16 @@ describe('image generation request lifetime and archive snapshots', () => {
     })
     const images = generation.batchItems.value.flatMap(item => item.result ? [item.result] : [])
 
-    await generation.archive(images, { apiKeyID: 99, references: [], referenceSnapshot: [] })
+    await generation.archive(images, { userID: 7, apiKeyID: 99, references: [], referenceSnapshot: [] })
 
     expect(images).toHaveLength(2)
-    expect(archiveHistory).toHaveBeenCalledTimes(2)
-    expect(archiveHistory.mock.calls.map(([payload]) => payload.prompt)).toEqual(['first image', 'second image'])
-    for (const [payload] of archiveHistory.mock.calls) {
-      expect(payload.api_key_id).toBe(31)
-      expect(payload.reference_snapshot).toEqual(referenceSnapshot)
+    expect(saveLocalImage).toHaveBeenCalledTimes(2)
+    expect(saveLocalImage.mock.calls.map(([, payload]) => payload.prompt)).toEqual(['first image', 'second image'])
+    for (const [userID, payload] of saveLocalImage.mock.calls) {
+      expect(userID).toBe(7)
+      expect(payload.referenceSnapshot).toEqual(referenceSnapshot)
     }
-    expect(images.every(image => image.serverArchived)).toBe(true)
+    expect(images.every(image => image.localSaved)).toBe(true)
   })
 
   it('supports manually archiving an image without stored request metadata', async () => {
@@ -193,12 +196,11 @@ describe('image generation request lifetime and archive snapshots', () => {
     Reflect.deleteProperty(image!, 'referenceSnapshot')
 
     await generation.archive([image!], {
-      apiKeyID: 77, references: [{ id: 'ref-fallback', name: 'fallback.png', mimeType: 'image/png' }],
+      userID: 7, apiKeyID: 77, references: [{ id: 'ref-fallback', name: 'fallback.png', mimeType: 'image/png' }],
     })
 
-    expect(archiveHistory.mock.calls[0][0]).toMatchObject({
-      api_key_id: 77,
-      reference_snapshot: [{ index: 1, name: 'fallback.png', content_type: 'image/png' }],
+    expect(saveLocalImage.mock.calls[0][1]).toMatchObject({
+      referenceSnapshot: [{ index: 1, name: 'fallback.png', content_type: 'image/png' }],
     })
   })
 
@@ -211,62 +213,65 @@ describe('image generation request lifetime and archive snapshots', () => {
     expect(items[1].error).toBe('second prompt failed')
     expect(generation.status.value).toBe('success')
 
-    await generation.archive(items.flatMap(item => item.result ? [item.result] : []), { references: [] })
+    await generation.archive(items.flatMap(item => item.result ? [item.result] : []), { userID: 7, references: [] })
 
-    expect(archiveHistory).toHaveBeenCalledOnce()
-    expect(archiveHistory.mock.calls[0][0].prompt).toBe('first')
+    expect(saveLocalImage).toHaveBeenCalledOnce()
+    expect(saveLocalImage.mock.calls[0][1].prompt).toBe('first')
   })
 
   it('skips successfully archived images and allows retrying an archive failure', async () => {
     generateImage.mockResolvedValue(pngResult)
     const error = { status: 400, reason: 'IMAGE_GENERATION_HISTORY_UPLOAD_INCOMPLETE', code: 400, message: 'internal detail' }
-    archiveHistory.mockRejectedValueOnce(error).mockResolvedValue({ id: 1 })
+    saveLocalImage.mockRejectedValueOnce(error).mockResolvedValue(undefined)
     const onError = vi.fn()
     const generation = useImageGeneration()
     const image = await generation.generate(request())
 
-    await generation.archive([image!], { references: [], onError })
-    expect(image!.serverArchived).toBe(false)
+    await generation.archive([image!], { userID: 7, references: [], onError })
+    expect(image!.localSaved).toBe(false)
+    expect(generation.status.value).toBe('success')
+    expect(generation.currentResult.value).toBe(image)
+    expect(revokeObjectURL).not.toHaveBeenCalled()
     expect(onError).toHaveBeenCalledWith(error)
     expect(onError.mock.calls[0][0]).toBe(error)
-    await generation.archive([image!], { references: [], onError })
-    await generation.archive([image!], { references: [], onError })
+    await generation.archive([image!], { userID: 7, references: [], onError })
+    await generation.archive([image!], { userID: 7, references: [], onError })
 
-    expect(archiveHistory).toHaveBeenCalledTimes(2)
-    expect(image!.serverArchived).toBe(true)
+    expect(saveLocalImage).toHaveBeenCalledTimes(2)
+    expect(image!.localSaved).toBe(true)
   })
 
   it('shares an archive in flight and permits one retry after its failure', async () => {
     const firstSave = deferred<{ id: number }>()
     const retrySave = deferred<{ id: number }>()
     generateImage.mockResolvedValue(pngResult)
-    archiveHistory.mockReturnValueOnce(firstSave.promise).mockReturnValueOnce(retrySave.promise)
+    saveLocalImage.mockReturnValueOnce(firstSave.promise).mockReturnValueOnce(retrySave.promise)
     const generation = useImageGeneration()
     const image = await generation.generate(request())
     const onError = vi.fn()
-    const options = { references: [], onError }
+    const options = { userID: 7, references: [], onError }
 
     const automaticSave = generation.archive([image!], options)
     const manualSave = generation.archive([image!], options)
-    expect(archiveHistory).toHaveBeenCalledOnce()
-    expect(image!.serverArchived).toBe(false)
+    expect(saveLocalImage).toHaveBeenCalledOnce()
+    expect(image!.localSaved).toBe(false)
     expect(generation.isArchiving(image!)).toBe(true)
     firstSave.reject(new Error('temporary history failure'))
     await Promise.all([automaticSave, manualSave])
     expect(onError).toHaveBeenCalledOnce()
-    expect(image!.serverArchived).toBe(false)
+    expect(image!.localSaved).toBe(false)
     expect(generation.isArchiving(image!)).toBe(false)
 
     const retry = generation.archive([image!], options)
     const repeatedRetry = generation.archive([image!], options)
-    expect(archiveHistory).toHaveBeenCalledTimes(2)
+    expect(saveLocalImage).toHaveBeenCalledTimes(2)
     expect(generation.isArchiving(image!)).toBe(true)
     retrySave.resolve({ id: 1 })
     await Promise.all([retry, repeatedRetry])
     await generation.archive([image!], options)
 
-    expect(archiveHistory).toHaveBeenCalledTimes(2)
-    expect(image!.serverArchived).toBe(true)
+    expect(saveLocalImage).toHaveBeenCalledTimes(2)
+    expect(image!.localSaved).toBe(true)
     expect(generation.isArchiving(image!)).toBe(false)
   })
 

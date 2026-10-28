@@ -6,10 +6,15 @@ import ImageGenView from '../ImageGenView.vue'
 import type { ImageProvider } from '@/constants/imageGen'
 import type { ImageGenerationEstimate } from '@/api/imageGenerations'
 
-const { getCapabilities, listKeys, listModels, estimate, listHistory, generate, generateBatch } = vi.hoisted(() => ({
+const { getCapabilities, listKeys, listModels, estimate, listHistory, listLocalImages, generate, generateBatch, showWarning } = vi.hoisted(() => ({
   getCapabilities: vi.fn(),
   listKeys: vi.fn(), listModels: vi.fn(), estimate: vi.fn(), listHistory: vi.fn(),
+  listLocalImages: vi.fn(),
   generate: vi.fn(), generateBatch: vi.fn(),
+  showWarning: vi.fn(),
+}))
+vi.mock('@/utils/localImageHistory', async importOriginal => ({
+  ...await importOriginal<typeof import('@/utils/localImageHistory')>(), listLocalImages, deleteLocalImage: vi.fn(),
 }))
 
 vi.mock('@/api/imageGenerations', () => ({
@@ -23,7 +28,7 @@ vi.mock('@/components/layout/AppLayout.vue', () => ({
   default: { template: '<main><slot /></main>' },
 }))
 vi.mock('@/stores/app', () => ({
-  useAppStore: () => ({ showError: vi.fn(), showSuccess: vi.fn(), showWarning: vi.fn() }),
+  useAppStore: () => ({ showError: vi.fn(), showSuccess: vi.fn(), showWarning }),
 }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 vi.mock('@/composables/useImageGeneration', async () => {
@@ -97,10 +102,14 @@ describe('ImageGenView group model availability', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     vi.clearAllMocks()
+    vi.stubGlobal('URL', Object.assign(class extends URL {}, {
+      createObjectURL: vi.fn(() => 'blob:model-history'), revokeObjectURL: vi.fn(),
+    }))
     getCapabilities.mockResolvedValue({ history_enabled: true, retention_days: 90 })
     listKeys.mockReset().mockResolvedValue({ items: [apiKey(1), apiKey(2), apiKey(3)] })
     listModels.mockReset().mockResolvedValue(['gpt-image-2'])
     listHistory.mockReset().mockResolvedValue({ items: [], total: 0 })
+    listLocalImages.mockReset().mockResolvedValue([])
     estimate.mockReset().mockResolvedValue({
       estimated_cost: 0.1, total_cost: 0.1, unit_cost: 0.1,
       image_count: 1, billing_tier: '1k', rate_multiplier: 1,
@@ -114,6 +123,7 @@ describe('ImageGenView group model availability', () => {
     for (const wrapper of wrappers.splice(0)) wrapper.unmount()
     vi.useRealTimers()
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   it('offers only concrete image IDs advertised by the selected Key group', async () => {
@@ -354,11 +364,11 @@ describe('ImageGenView group model availability', () => {
   })
 
   it('does not submit an unsupported model restored from history', async () => {
-    listHistory.mockResolvedValue({ items: [{
-      id: 11, model: 'dreamina-seedream-5.0-pro', provider: 'dreamina-canvas', prompt: 'Old prompt',
-      content_type: 'image/png', size_bytes: 0, status: 'completed', content_available: false,
-      created_at: '2026-10-17T00:00:00Z',
-    }], total: 1 })
+    listLocalImages.mockResolvedValue([{
+      id: 'local-11', userID: 1, model: 'dreamina-seedream-5.0-pro', provider: 'dreamina-canvas', prompt: 'Old prompt',
+      blob: new Blob(['png'], { type: 'image/png' }), timestamp: 1,
+      mimeType: 'image/png', size: '2K', format: 'png', extension: 'png', normalizedParams: {},
+    }])
     const wrapper = mountView()
     await flushPromises()
     await button(wrapper, 'imageGen.history.reuse').trigger('click')
@@ -368,6 +378,26 @@ describe('ImageGenView group model availability', () => {
 
     expect(generate).not.toHaveBeenCalled()
     expect(estimate.mock.calls.every(([request]) => request.model === 'gpt-image-2')).toBe(true)
+  })
+
+  it('restores edit parameters while requiring the original reference to be uploaded again', async () => {
+    listLocalImages.mockResolvedValue([{
+      id: 'local-edit', userID: 1, model: 'gpt-image-2', provider: 'openai-responses', prompt: 'Keep the original scene',
+      blob: new Blob(['result png'], { type: 'image/png' }), timestamp: 1, mimeType: 'image/png',
+      size: '1536x1024', format: 'png', extension: 'png', normalizedParams: { size: '1536x1024' },
+      referenceSnapshot: [{ index: 1, name: 'original.png', content_type: 'image/png' }],
+    }])
+    const wrapper = mountView()
+    await flushPromises()
+    await button(wrapper, 'imageGen.history.reuse').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('textarea').element.value).toBe('Keep the original scene')
+    expect(button(wrapper, 'imageGen.generate').attributes('disabled')).toBeDefined()
+    await button(wrapper, 'imageGen.generate').trigger('click')
+    expect(showWarning).toHaveBeenCalledWith('imageGen.history.referencesReupload')
+    expect(generate).not.toHaveBeenCalled()
+    expect(listHistory).not.toHaveBeenCalled()
+    expect(wrapper.find('img[alt="original.png"]').exists()).toBe(false)
   })
 
   it('blocks an unsupported model even if a stale selector emits it', async () => {
