@@ -176,7 +176,7 @@
                 <label class="input-label">{{ t('imageGen.aspectRatio') }}</label>
                 <Select v-model="aspectRatio" :options="aspectRatioOptions" />
               </div>
-              <div>
+              <div v-if="imageSizeOptions.length">
                 <label class="input-label">{{ t('imageGen.imageSize') }}</label>
                 <Select v-model="imageSize" :options="imageSizeOptions" />
               </div>
@@ -584,6 +584,7 @@ const batchProgressLabel = computed(() => {
 })
 
 const effectiveSize = computed(() => {
+  if (provider.value === 'muse-native') return '1K'
   if (supportsAspectRatio.value) return imageSize.value
   return size.value === 'custom' ? `${customWidth.value}x${customHeight.value}` : size.value
 })
@@ -865,15 +866,16 @@ function buildRequest(): ImageGenRequest | null {
   const key = selectedKey.value
   if (!key || !modelAvailable.value) return null
   const isGeminiLike = provider.value === 'gemini-native' || provider.value === 'dreamina-canvas'
+  const isMuse = provider.value === 'muse-native'
   return {
     apiBase: window.location.origin,
     apiKey: key.key,
     apiKeyID: key.id,
     model: model.value,
     prompt: prompt.value.trim(),
-    size: isGeminiLike ? undefined : effectiveSize.value,
+    size: isMuse ? aspectRatio.value : isGeminiLike ? undefined : effectiveSize.value,
     imageSize: isGeminiLike ? imageSize.value : undefined,
-    aspectRatio: isGeminiLike ? aspectRatio.value : undefined,
+    aspectRatio: isGeminiLike || isMuse ? aspectRatio.value : undefined,
     quality: supportsOutputFormat.value ? quality.value : undefined,
     background: supportsOutputFormat.value ? background.value : undefined,
     outputFormat: supportsOutputFormat.value ? outputFormat.value : undefined,

@@ -1,5 +1,11 @@
 export default {
     accounts: {
+      mediaProvider: {
+        title: '媒体供应商',
+        grok: 'Grok（默认）',
+        muse: 'Muse2API',
+        hint: '选择 Muse2API 后，填写 Muse 服务地址及访问密钥，使用 Muse 原生模型。',
+      },
       title: '账号管理',
       description: '管理 AI 平台账号和 Cookie',
       createAccount: '添加账号',

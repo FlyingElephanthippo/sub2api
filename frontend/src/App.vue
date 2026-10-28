@@ -165,7 +165,7 @@ onMounted(async () => {
 <template>
   <NavigationProgress />
   <RouterView v-slot="{ Component }">
-    <KeepAlive :key="routeCacheIdentity" include="ImageGenView" :max="1">
+    <KeepAlive :key="routeCacheIdentity" include="ImageGenView,VideoGenView" :max="2">
       <component :is="Component" />
     </KeepAlive>
   </RouterView>

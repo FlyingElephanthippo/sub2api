@@ -1158,6 +1158,26 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	if forcedPlatform, ok := middleware2.GetForcePlatformFromContext(c); ok && strings.TrimSpace(forcedPlatform) != "" {
 		platform = forcedPlatform
 	}
+	if c.Query("purpose") == "video" {
+		models := []string{}
+		if platform == service.PlatformGrok || platform == service.PlatformComposite {
+			available := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, platform)
+			if platform == service.PlatformComposite {
+				available = h.compositeAvailableModels(c.Request.Context(), groupID, "", true)
+			}
+			source := modelListingSource(platform, available, defaultModelIDsForPlatform(platform))
+			if apiKey != nil && apiKey.Group != nil && apiKey.Group.ModelAllowlistEnabled() {
+				source = apiKey.Group.ModelAllowlist.FilterForListing(source)
+			}
+			for _, model := range source {
+				if model == service.MuseVideoModel || strings.HasPrefix(model, "grok-imagine-video") {
+					models = append(models, model)
+				}
+			}
+		}
+		writeModelsList(c, platform, models)
+		return
+	}
 
 	// Codex discovery describes Responses driver models and can omit supported
 	// image tool models. The image picker needs the local group routing catalog.
@@ -1399,6 +1419,9 @@ func writeGrokModelsList(c *gin.Context, modelIDs []string) {
 				OwnedBy:     "xai",
 				DisplayName: modelID,
 			}
+		}
+		if modelID == "muse-spark" || modelID == "muse-image" || modelID == service.MuseVideoModel {
+			model.OwnedBy = "muse"
 		}
 		item := grokModelListItem{Model: model}
 		if grokModelSupportsConfigurableReasoning(modelID) {

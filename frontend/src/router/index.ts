@@ -241,6 +241,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/video-gen',
+    name: 'VideoGen',
+    component: () => import('@/views/user/VideoGenView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Video Generation',
+      titleKey: 'videoGen.title',
+      descriptionKey: 'videoGen.description'
+    }
+  },
+  {
     path: '/usage',
     name: 'Usage',
     component: () => import('@/views/user/UsageView.vue'),

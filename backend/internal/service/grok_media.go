@@ -659,6 +659,15 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	if account.Platform != PlatformGrok {
 		return nil, fmt.Errorf("account platform %s is not supported for grok media", account.Platform)
 	}
+	if IsMuseMediaAccount(account) {
+		if endpoint == GrokMediaEndpointImagesGenerations || endpoint == GrokMediaEndpointImagesEdits {
+			return s.forwardMuseImage(ctx, c, account, endpoint, body, contentType)
+		}
+		return s.forwardMuseVideo(ctx, c, account, endpoint, requestID, body, contentType)
+	}
+	if endpoint.RequiresRequestBody() && ExtractGrokMediaModel(contentType, body) == MuseVideoModel {
+		return nil, museMediaError(c, http.StatusBadRequest, "invalid_request_error", "muse-video requires an explicitly configured Muse media account")
+	}
 
 	token, _, err := s.getRequestCredential(ctx, c, account)
 	if err != nil {

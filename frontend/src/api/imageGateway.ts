@@ -1,6 +1,5 @@
 /**
- * 生图网关调用。四条传输通道（openai-responses / gemini-native /
- * aggregate-w-images / dreamina-canvas）的请求体与结果形态都不一样，全部收在这里，
+ * 生图网关调用。各 provider 的请求体与结果形态都不一样，全部收在这里，
  * 页面只面对 generateImage() 一个入口。
  *
  * 与面板接口的区别：这些请求走 /v1/* 网关鉴权，凭据是 API Key 而不是面板 token，
@@ -779,9 +778,46 @@ function buildTaskHandleSafe(
   }
 }
 
-/**
- * 统一入口。按 provider 分派到四条通道，并把结果规整成 {data, mimeType}。
- */
+async function submitMuseImage(req: ImageGenerateRequest, signal: AbortSignal): Promise<ImageResult> {
+  if ((req.references?.length || 0) > 4) throw new Error('Muse supports at most 4 reference images')
+  const references = await resolveReferences(req.references || [])
+  let totalBytes = 0
+  const images = references.map(reference => {
+    const url = reference.dataUrl || ''
+    const match = /^data:image\/(?:png|jpeg|webp);base64,([A-Za-z0-9+/=\r\n]+)$/i.exec(url)
+    if (!match) throw new Error('failed to read reference image, please upload again')
+    const encoded = match[1].replace(/\s/g, '')
+    const bytes = Math.floor(encoded.length * 3 / 4) - (encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0)
+    if (bytes > 10 * 1024 * 1024) throw new Error('Muse reference image exceeds 10 MiB')
+    try {
+      if (!atob(encoded).length) throw new Error('empty image')
+    } catch {
+      throw new Error('failed to read reference image, please upload again')
+    }
+    totalBytes += bytes
+    return { url }
+  })
+  if (totalBytes > 24 * 1024 * 1024) throw new Error('Muse reference images exceed 24 MiB in total')
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+  const response = await fetch(`${gatewayBase(req.apiBase)}/v1/images/${images.length ? 'edits' : 'generations'}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${req.apiKey}` },
+    body: JSON.stringify({
+      model: req.model, prompt: req.prompt, size: req.aspectRatio || '1:1',
+      n: 1, response_format: 'b64_json', ...(images.length ? { images } : {}),
+    }),
+    signal,
+    credentials: 'omit',
+    redirect: 'error',
+  })
+  if (!response.ok) throw new Error(`API ${response.status}: ${await readErrorMessage(response)}`)
+  const body = await response.json()
+  const first = body?.data?.[0]
+  if (typeof first?.b64_json !== 'string' || !first.b64_json) throw new Error('Muse returned no inline image')
+  return { data: first.b64_json, mimeType: first.mime_type }
+}
+
+/** 统一入口，按 provider 分派请求并将结果规整成 {data, mimeType}。 */
 export async function generateImage(
   req: ImageGenerateRequest,
   signal: AbortSignal
@@ -789,6 +825,8 @@ export async function generateImage(
   const provider = resolveImageModel(req.model).provider
   const requestID = req.requestID || makeRequestID()
   const withID = { ...req, requestID }
+
+  if (provider === 'muse-native') return submitMuseImage(withID, signal)
 
   if (provider === 'openai-responses' || provider === 'aggregate-w-images') {
     try {
@@ -815,6 +853,7 @@ export function normalizedParamsFor(
     'size' | 'quality' | 'background' | 'outputFormat' | 'outputCompression' | 'aspectRatio' | 'imageSize'
   >
 ): NormalizedImageParams {
+  if (provider === 'muse-native') return { aspect_ratio: req.aspectRatio }
   if (provider === 'gemini-native' || provider === 'dreamina-canvas') {
     return { aspect_ratio: req.aspectRatio, image_size: req.imageSize }
   }

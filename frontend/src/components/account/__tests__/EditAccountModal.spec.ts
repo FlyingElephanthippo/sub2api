@@ -336,6 +336,22 @@ describe('EditAccountModal', () => {
 
   afterEach(() => vi.useRealTimers())
 
+  it('preserves the Muse provider when saving and removes it when explicitly switching to Grok', async () => {
+    const account = buildAccount()
+    account.platform = 'grok'
+    account.credentials = { api_key: 'test-muse-key', base_url: 'https://muse.example/v1', media_provider: 'muse', model_mapping: { 'muse-video': 'muse-video' } }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    expect((wrapper.get('[data-testid="media-provider"]').element as HTMLSelectElement).value).toBe('muse')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({ media_provider: 'muse', model_mapping: { 'muse-video': 'muse-video' } })
+    await wrapper.get('[data-testid="media-provider"]').setValue('grok')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[1]?.[1]?.credentials).not.toHaveProperty('media_provider')
+    wrapper.unmount()
+  })
+
   it('passes existing non-identity mappings to the whitelist selector and preserves them on save', async () => {
     const account = buildAccount()
     account.credentials.model_mapping = { 'gpt-5.2': 'gpt-5.2', 'gpt-latest': 'deepseek-chat' }

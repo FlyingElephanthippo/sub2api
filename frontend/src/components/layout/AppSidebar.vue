@@ -339,6 +339,11 @@ const ImageGenIcon = {
     )
 }
 
+const VideoGenIcon = {
+  render: () => h('svg',
+    { fill: 'none', viewBox: '0 0 24 24', stroke: 'currentColor', 'stroke-width': '1.5' },
+    [h('path', { 'stroke-linecap': 'round', 'stroke-linejoin': 'round', d: 'M15.75 10.5l4.5-3v9l-4.5-3m-10.5-7.5h7.5A2.25 2.25 0 0115 8.25v7.5A2.25 2.25 0 0112.75 18h-7.5A2.25 2.25 0 013 15.75v-7.5A2.25 2.25 0 015.25 6z' })])
+}
 const ChartIcon = {
   render: () =>
     h(
@@ -749,6 +754,7 @@ function buildSelfNavItems(withDashboard: boolean): NavItem[] {
     { path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon },
     { path: '/batch-image', label: t('nav.batchImage'), icon: BatchImageIcon, hideInSimpleMode: true, featureFlag: flagBatchImageAccess },
     { path: '/image-gen', label: t('nav.imageGen'), icon: ImageGenIcon, hideInSimpleMode: true, featureFlag: flagImageGenAccess },
+    { path: '/video-gen', label: t('nav.videoGen'), icon: VideoGenIcon, hideInSimpleMode: true, featureFlag: () => isAdmin.value },
     { path: '/usage', label: t('nav.usage'), icon: ChartIcon, hideInSimpleMode: true },
     { path: '/available-channels', label: t('nav.availableChannels'), icon: ChannelIcon, hideInSimpleMode: true, featureFlag: flagAvailableChannels },
     { path: '/monitor', label: t('nav.channelStatus'), icon: SignalIcon, featureFlag: flagChannelMonitor },

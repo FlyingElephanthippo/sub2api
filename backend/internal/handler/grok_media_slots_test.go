@@ -206,7 +206,11 @@ func newGrokMediaSlotHandler(t *testing.T, oauth, mismatch bool, platforms ...st
 		accounts[i] = service.Account{ID: int64(i + 1), Platform: service.PlatformGrok, Type: service.AccountTypeAPIKey,
 			Status: service.StatusActive, Schedulable: true, Concurrency: 50, Priority: i,
 			GroupIDs: []int64{24}, Credentials: map[string]any{"api_key": "test-key", "access_token": "test-token"}}
-		if len(platforms) > 0 {
+		if len(platforms) > 0 && platforms[0] == "muse" {
+			accounts[i].Credentials["media_provider"] = "muse"
+			accounts[i].Credentials["base_url"] = "https://muse.example/v1"
+			accounts[i].Credentials["model_mapping"] = map[string]any{"muse-video": "muse-video"}
+		} else if len(platforms) > 0 {
 			accounts[i].Platform = platforms[0]
 			accounts[i].Credentials["base_url"] = "https://ark.cn-beijing.volces.com/api/v3"
 			accounts[i].Credentials["openai_capabilities"] = []string{"seedance"}
@@ -402,21 +406,52 @@ func TestGrokMediaVideoLookupOwnerIsolation(t *testing.T) {
 }
 
 func TestGrokMediaVideoCompletionStillClaimsBillingOnce(t *testing.T) {
-	h, _, bindings, _ := newGrokMediaSlotHandler(t, false, false)
-	c, _ := grokMediaSlotContext(context.Background(), false)
-	key, ok := middleware2.GetAPIKeyFromContext(c)
-	require.True(t, ok)
-	subject := middleware2.AuthSubject{UserID: 10, Concurrency: 5}
-	result := &service.OpenAIForwardResult{ResponseID: "task", Model: "grok-imagine-video",
-		VideoCount: 1, VideoDurationSeconds: 6}
-	for i := range 20 {
-		bill := prepareGrokVideoCompletionBilling(c.Request.Context(), h, zap.NewNop(), key, subject, "task", result)
-		if i == 0 {
-			require.NotNil(t, bill)
-			require.Equal(t, service.StableGrokVideoBillingRequestID("task"), bill.RequestID)
-		} else {
-			require.Nil(t, bill)
-		}
+	for _, model := range []string{"grok-imagine-video", service.MuseVideoModel} {
+		t.Run(model, func(t *testing.T) {
+			h, _, bindings, _ := newGrokMediaSlotHandler(t, false, false)
+			c, _ := grokMediaSlotContext(context.Background(), false)
+			key, ok := middleware2.GetAPIKeyFromContext(c)
+			require.True(t, ok)
+			subject := middleware2.AuthSubject{UserID: 10, Concurrency: 5}
+			result := &service.OpenAIForwardResult{ResponseID: "task", Model: model,
+				VideoCount: 1, VideoDurationSeconds: 6}
+			for i := range 20 {
+				bill := prepareGrokVideoCompletionBilling(c.Request.Context(), h, zap.NewNop(), key, subject, "task", result)
+				if i == 0 {
+					require.NotNil(t, bill)
+					require.Equal(t, model, bill.BillingModel)
+					require.Equal(t, service.StableGrokVideoBillingRequestID("task"), bill.RequestID)
+				} else {
+					require.Nil(t, bill)
+				}
+			}
+			require.Len(t, bindings.billed, 1)
+		})
 	}
-	require.Len(t, bindings.billed, 1)
+}
+
+func TestMuseMediaVideoLookupOwnerIsolation(t *testing.T) {
+	for _, other := range []string{"user", "api key", "group", "task"} {
+		t.Run(other, func(t *testing.T) {
+			h, slots, _, upstream := newGrokMediaSlotHandler(t, false, false, "muse")
+			c, rec := grokMediaSlotContext(context.Background(), false)
+			key, ok := middleware2.GetAPIKeyFromContext(c)
+			require.True(t, ok)
+			switch other {
+			case "user":
+				c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 11, Concurrency: 5})
+			case "api key":
+				key.ID = 21
+			case "group":
+				groupID := int64(25)
+				key.GroupID = &groupID
+			case "task":
+				c.Params = gin.Params{{Key: "request_id", Value: "other-task"}}
+			}
+			h.GrokVideoStatus(c)
+			require.Equal(t, http.StatusNotFound, rec.Code)
+			require.Zero(t, upstream.calls)
+			slots.assertReleased(t)
+		})
+	}
 }

@@ -105,6 +105,34 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 
 	contentType := c.GetHeader("Content-Type")
 	requestInfo := service.ParseGrokMediaRequest(contentType, body)
+	if requestInfo.Model == "muse-image" {
+		if endpoint != service.GrokMediaEndpointImagesGenerations && endpoint != service.GrokMediaEndpointImagesEdits {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "muse-image requires an images endpoint")
+			return
+		}
+		requestInfo, body, err = service.ParseMuseImageRequest(contentType, body)
+		if err != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		contentType = "application/json"
+	}
+	if requestInfo.Model == service.MuseVideoModel {
+		if endpoint != service.GrokMediaEndpointVideosGenerations {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Muse supports video generation and retrieval; video edits/extensions are unavailable")
+			return
+		}
+		requestInfo, body, err = service.ParseMuseVideoRequest(contentType, body)
+		if err != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		contentType = "application/json"
+		if err := service.ValidateMuseVideoPricing(apiKey); err != nil {
+			h.errorResponse(c, http.StatusServiceUnavailable, "muse_video_pricing_unavailable", err.Error())
+			return
+		}
+	}
 	if endpoint == service.SeedanceEndpointCreate {
 		requestInfo, err = service.ParseSeedanceRequest(body)
 		if err != nil {
@@ -334,6 +362,20 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		)
 
 		account := selection.Account
+		if endpoint.IsGenerationRequest() && !endpoint.IsSeedance() &&
+			(service.IsMuseMediaAccount(account) != (requestModel == service.MuseVideoModel || requestModel == "muse-image")) {
+			// A broad account model mapping must never send Muse requests to xAI or
+			// advertise xAI models through the Muse adapter.
+			releaseAccount()
+			mediaEligibilityRejected = true
+			failedAccountIDs[account.ID] = struct{}{}
+			if switchCount >= maxAccountSwitches {
+				h.errorResponse(c, http.StatusServiceUnavailable, "muse_media_no_eligible_account", "No account is configured for this media provider")
+				return
+			}
+			switchCount++
+			continue
+		}
 		if endpoint.IsGenerationRequest() && !endpoint.IsSeedance() {
 			eligible, eligibilityReason, eligibilityErr := h.ensureGrokMediaAccountEligibility(requestCtx, account)
 			if !eligible {
@@ -383,12 +425,25 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
 		writerSizeBeforeForward := c.Writer.Size()
+		forwardCtx := requestCtx
+		if service.IsMuseMediaAccount(account) && endpoint.IsVideoLookupRequest() {
+			pending, loadErr := h.gatewayService.LoadGrokVideoPendingBilling(requestCtx, requestID, subject.UserID, apiKey.ID)
+			if loadErr != nil || pending == nil || pending.Model != service.MuseVideoModel {
+				h.errorResponse(c, http.StatusServiceUnavailable, "muse_video_metadata_unavailable", "Muse video task metadata is unavailable; retry later")
+				return
+			}
+			if err := service.ValidateMuseVideoPricing(apiKey); err != nil {
+				h.errorResponse(c, http.StatusServiceUnavailable, "muse_video_pricing_unavailable", err.Error())
+				return
+			}
+			forwardCtx = service.WithMuseVideoPendingBilling(requestCtx, pending)
+		}
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer releaseAccount()
 			if endpoint.IsSeedance() {
 				return h.gatewayService.ForwardSeedance(requestCtx, c, account, endpoint, requestID, body)
 			}
-			return h.gatewayService.ForwardGrokMedia(requestCtx, c, account, endpoint, requestID, body, contentType)
+			return h.gatewayService.ForwardGrokMedia(forwardCtx, c, account, endpoint, requestID, body, contentType)
 		}()
 
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()

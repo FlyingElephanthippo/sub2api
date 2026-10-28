@@ -219,6 +219,29 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
   afterEach(() => vi.useRealTimers())
 
+  it('creates an explicit Muse provider with only its native model mapping and no billing probe', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Grok')
+    await wrapper.get('[data-testid="grok-account-type-api-key"]').trigger('click')
+    await wrapper.get('[data-testid="media-provider"]').setValue('muse')
+    const textInputs = wrapper.findAll('form#create-account-form input[type="text"]')
+    await textInputs[0]!.setValue('Muse private test')
+    await textInputs[1]!.setValue('https://muse.example/v1')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-muse-key')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock).toHaveBeenCalledOnce()
+    expect(createAccountMock.mock.calls[0]?.[0]).toMatchObject({
+      platform: 'grok', type: 'apikey', upstream_billing_probe_enabled: false,
+      credentials: {
+        media_provider: 'muse', base_url: 'https://muse.example/v1',
+        model_mapping: { 'muse-spark': 'muse-spark', 'muse-image': 'muse-image', 'muse-video': 'muse-video' }
+      }
+    })
+    expect(probeUpstreamBillingMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('sets month and year expiry presets without submitting the account form', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-01-31T12:34:00'))

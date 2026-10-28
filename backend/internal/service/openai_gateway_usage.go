@@ -591,6 +591,19 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 	pricingAt time.Time,
 ) (*CostBreakdown, error) {
 	billingModel := firstUsageBillingModel(billingModels)
+	if result != nil && result.VideoCount > 0 && (billingModel == MuseVideoModel || result.BillingModel == MuseVideoModel) {
+		if err := ValidateMuseVideoPricing(apiKey); err != nil {
+			// Keep this a hard error: generic missing-pricing errors intentionally
+			// fall back to zero-token recording, which must not silently free Muse jobs.
+			return nil, err
+		}
+		if !validMuseVideoDuration(result.VideoDurationSeconds) {
+			return nil, errors.New("Muse video billing requires the create-time requested duration")
+		}
+		return s.billingService.CalculateVideoCost(MuseVideoModel, VideoBillingResolution480P,
+			result.VideoCount, result.VideoDurationSeconds,
+			&VideoPriceConfig{ModelPrices: apiKey.Group.VideoModelPrices}, videoMultiplier), nil
+	}
 	if result != nil && result.WebSearchCalls > 0 {
 		// Codex alpha/search 网页搜索按次计费：上游不返回 usage/token 字段，单价只取
 		// 分组覆盖价（nil 时默认 0.01 = 官方 $10/1000 次），不参与渠道级模型定价。

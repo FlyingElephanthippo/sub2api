@@ -126,6 +126,30 @@ describe('ImageGenView group model availability', () => {
     expect(modelSelect(wrapper).props('modelValue')).toBe('gpt-image-2')
   })
 
+  it('submits the native Muse model and ratio without unsupported resolution or GPT options', async () => {
+    listKeys.mockResolvedValue({ items: [apiKey(1, 'grok')] })
+    listModels.mockResolvedValue(['muse-spark', 'muse-image', 'muse-video'])
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(modelIDs(wrapper)).toEqual(['muse-image'])
+    expect(wrapper.text()).not.toContain('imageGen.imageSize')
+    expect(wrapper.text()).not.toContain('imageGen.quality')
+    const ratio = wrapper.findAllComponents(SelectStub).find(select =>
+      (select.props('options') as Array<{ value: string }>).some(option => option.value === '16:9'))
+    expect(ratio).toBeDefined()
+    ratio!.vm.$emit('update:modelValue', '16:9')
+    await wrapper.get('textarea').setValue('A teacup')
+    await flushPromises()
+    await button(wrapper, 'imageGen.generate').trigger('click')
+
+    expect(generate).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'muse-image', size: '16:9', aspectRatio: '16:9', apiKey: 'sk-model-test-1',
+      imageSize: undefined, quality: undefined, background: undefined,
+      outputFormat: undefined, outputCompression: undefined,
+    }))
+  })
+
   it('retains the production group image aliases and submits the selected public ID unchanged', async () => {
     const advertised = ['gpt-image-2.0', 'gpt-image-2.0-不超分', 'gpt-image-2.5-flare']
     listModels.mockResolvedValue(advertised)

@@ -1,7 +1,7 @@
 /**
  * 生图页的模型目录与参数约束。
  *
- * 四类 provider 的请求体形态差别很大（见 buildImageRequest），所以每个模型都要
+ * 各 provider 的请求体形态差别很大（见 buildImageRequest），所以每个模型都要
  * 声明自己支持哪些参数、能带多少张参考图、可选的宽高比与分辨率档位。UI 据此
  * 隐藏不适用的控件，而不是让用户提交一个上游会拒绝的组合。
  */
@@ -11,6 +11,7 @@ export type ImageProvider =
   | 'gemini-native'
   | 'aggregate-w-images'
   | 'dreamina-canvas'
+  | 'muse-native'
 
 export interface ImageModelSpec {
   /** 提交给网关的模型名 */
@@ -130,10 +131,21 @@ export const DREAMINA_MODELS: ImageModelSpec[] = DREAMINA_MODEL_DEFS.map(
   })
 )
 
+export const MUSE_IMAGE_MODELS: ImageModelSpec[] = [{
+  value: 'muse-image',
+  label: 'Muse Image',
+  provider: 'muse-native',
+  maxReferences: 4,
+  aspectRatios: ['1:1', '16:9', '9:16', '4:3', '3:4'],
+  imageSizes: [],
+  supportsTransparentBackground: false,
+  supportsOutputFormat: false,
+}]
 export const IMAGE_MODELS: ImageModelSpec[] = [
   ...OPENAI_RESPONSES_MODELS,
   ...AGGREGATE_W_MODELS,
   ...DREAMINA_MODELS,
+  ...MUSE_IMAGE_MODELS,
 ]
 
 export const DEFAULT_IMAGE_MODEL = 'gpt-image-2'
@@ -154,7 +166,7 @@ export function resolveImageModel(model: string): ImageModelSpec {
     }
   }
   return (
-    [...OPENAI_RESPONSES_MODELS, ...GEMINI_NATIVE_MODELS, ...AGGREGATE_W_MODELS, ...DREAMINA_MODELS].find(
+    [...OPENAI_RESPONSES_MODELS, ...GEMINI_NATIVE_MODELS, ...AGGREGATE_W_MODELS, ...DREAMINA_MODELS, ...MUSE_IMAGE_MODELS].find(
       spec => spec.value === model
     ) ?? OPENAI_RESPONSES_MODELS[0]
   )

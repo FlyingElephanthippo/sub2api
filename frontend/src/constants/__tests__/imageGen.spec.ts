@@ -3,6 +3,17 @@ import { describe, expect, it } from 'vitest'
 import { getAvailableImageModels, resolveImageModel } from '../imageGen'
 
 describe('advertised image model availability', () => {
+  it('offers Muse only when advertised, with its own geometry and reference limits', () => {
+    expect(getAvailableImageModels(['muse-spark', 'muse-video'])).toEqual([])
+    expect(getAvailableImageModels(['muse-image', 'muse-image', 'gpt-image-2'], 'muse-native'))
+      .toEqual([expect.objectContaining({
+        value: 'muse-image', provider: 'muse-native', maxReferences: 4,
+        aspectRatios: ['1:1', '16:9', '9:16', '4:3', '3:4'], imageSizes: [],
+        supportsTransparentBackground: false, supportsOutputFormat: false,
+      })])
+    expect(resolveImageModel('muse-image').value).toBe('muse-image')
+  })
+
   it.each(['gpt-image-2.0', 'gpt-image-2.0-不超分', 'gpt-image-2.5-flare'])(
     'preserves the public group alias %s while using the OpenAI image request shape', model => {
       expect(resolveImageModel(model)).toMatchObject({

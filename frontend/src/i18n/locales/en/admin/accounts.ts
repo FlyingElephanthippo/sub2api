@@ -1,5 +1,11 @@
 export default {
     accounts: {
+      mediaProvider: {
+        title: 'Media provider',
+        grok: 'Grok (default)',
+        muse: 'Muse2API',
+        hint: 'For Muse2API, enter the Muse service URL and access key to use native Muse models.',
+      },
       title: 'Account Management',
       description: 'Manage AI platform accounts and credentials',
       createAccount: 'Create Account',

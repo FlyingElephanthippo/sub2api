@@ -1501,6 +1501,7 @@
 
       <!-- API Key input (only for apikey type, excluding Antigravity which has its own fields) -->
       <div v-if="form.type === 'apikey' && form.platform !== 'antigravity'" class="space-y-4">
+        <MuseMediaProviderField v-if="form.platform === 'grok'" v-model="mediaProvider" id="create-media-provider" />
         <div v-if="!isMultiProtocolPlatform || apiProtocol !== 'adaptive'">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
@@ -1511,7 +1512,7 @@
           />
           <p v-if="baseUrlHint" class="input-hint">{{ baseUrlHint }}</p>
           <GrokBaseUrlPresets
-            v-if="form.platform === 'grok'"
+            v-if="form.platform === 'grok' && mediaProvider !== 'muse'"
             class="mt-2"
             @select="apiKeyBaseUrl = $event"
           />
@@ -4163,6 +4164,7 @@ import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
+import MuseMediaProviderField from '@/components/account/MuseMediaProviderField.vue'
 import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
 import { applyExplicitCacheUpstreamCredentials, isOfficialGeminiBaseUrl } from '@/utils/geminiExplicitCache'
 import OpenCodeGoProtocolRulesEditor from '@/components/account/OpenCodeGoProtocolRulesEditor.vue'
@@ -4395,6 +4397,19 @@ const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_acco
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
+const mediaProvider = ref<'grok' | 'muse'>('grok')
+watch(mediaProvider, (provider) => {
+  if (form.platform !== 'grok' || form.type !== 'apikey') return
+  if (provider === 'muse') {
+    if (apiKeyBaseUrl.value === 'https://api.x.ai/v1') apiKeyBaseUrl.value = ''
+    modelRestrictionMode.value = 'whitelist'
+    allowedModels.value = ['muse-spark', 'muse-image', 'muse-video']
+    modelMappings.value = []
+    upstreamBillingAutoProbeEnabled.value = false
+  } else {
+    allowedModels.value = [...getModelsByPlatform('grok')]
+  }
+})
 const upstreamBillingAutoProbeEnabled = ref(true)
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）账号类型、API 协议与端点 ──
@@ -4614,6 +4629,7 @@ const syncPreviewCredentials = computed(() => {
     type: form.type,
     base_url: baseUrl || undefined,
     api_key: apiKeyValue.value,
+    ...(form.platform === 'grok' && mediaProvider.value === 'muse' ? { media_provider: 'muse' } : {}),
     ...(modelMapping ? { model_mapping: modelMapping } : {})
   }
 })
@@ -5135,6 +5151,7 @@ watch(
 watch(
   () => form.platform,
   (newPlatform) => {
+    mediaProvider.value = 'grok'
     // Reset base URL based on platform
     if (isMultiProtocolApiKeyPlatform(newPlatform)) {
       const mode = newPlatform === 'opencode_go' ? openCodeAccountMode.value : accountMode.value
@@ -5284,7 +5301,9 @@ watch(
   [modelRestrictionMode, () => form.platform],
   ([newMode]) => {
     if (newMode === 'whitelist') {
-      allowedModels.value = [...getModelsByPlatform(form.platform)]
+      allowedModels.value = form.platform === 'grok' && mediaProvider.value === 'muse'
+        ? ['muse-spark', 'muse-image', 'muse-video']
+        : [...getModelsByPlatform(form.platform)]
     }
   }
 )
@@ -5631,6 +5650,7 @@ const resetForm = () => {
   adaptiveBaseUrls.value = { chat_completions: '', anthropic: '', responses: '' }
   apiKeyBaseUrl.value = 'https://api.anthropic.com'
   apiKeyValue.value = ''
+  mediaProvider.value = 'grok'
   upstreamRequestIdHeader.value = ''
   upstreamBillingAutoProbeEnabled.value = true
   editQuotaLimit.value = null
@@ -6107,6 +6127,10 @@ const handleSubmit = async () => {
   }
 
   // Determine default base URL based on platform
+  if (form.platform === 'grok' && mediaProvider.value === 'muse' && !apiKeyBaseUrl.value.trim()) {
+    appStore.showError(t('admin.accounts.upstream.pleaseEnterBaseUrl'))
+    return
+  }
   const defaultBaseUrl =
     form.platform === 'openai'
       ? 'https://api.openai.com'
@@ -6122,6 +6146,9 @@ const handleSubmit = async () => {
   const credentials: Record<string, unknown> = {
     base_url: apiKeyBaseUrl.value.trim() || defaultBaseUrl,
     api_key: apiKeyValue.value.trim()
+  }
+  if (form.platform === 'grok' && mediaProvider.value === 'muse') {
+    credentials.media_provider = 'muse'
   }
   if (form.platform === 'gemini' && isOfficialGeminiBaseUrl(apiKeyBaseUrl.value)) {
     credentials.tier_id = geminiTierAIStudio.value
