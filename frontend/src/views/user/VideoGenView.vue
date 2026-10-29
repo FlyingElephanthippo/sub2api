@@ -54,7 +54,7 @@
             </div>
           </div>
           <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('videoGen.pricingNotice') }}</p>
-          <button type="submit" class="btn btn-primary w-full" :disabled="!canSubmit">{{ busy ? t('videoGen.generating') : t('videoGen.generate') }}</button>
+          <button type="submit" class="btn btn-primary w-full" :disabled="!canSubmit">{{ loadingContent ? t('videoGen.loadingVideo') : busy ? t('videoGen.generating') : t('videoGen.generate') }}</button>
         </form>
         <section class="card space-y-4 p-5" :aria-label="t('videoGen.result')">
           <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('videoGen.result') }}</h2>
@@ -63,11 +63,12 @@
           </div>
           <div v-if="busy || task" class="space-y-3" aria-live="polite">
             <p>{{ statusLabel }}</p>
+            <p v-if="loadingContent" class="text-sm text-gray-500">{{ downloadProgressLabel }}</p>
             <div v-if="task && task.status === 'pending'" class="h-2 overflow-hidden rounded-full bg-gray-200 dark:bg-dark-700">
               <div class="h-full bg-primary-500 transition-all" :style="{ width: `${Math.max(5, task.progress)}%` }" />
             </div>
             <p v-if="task" class="break-all text-xs text-gray-500">{{ t('videoGen.taskID') }}: {{ task.id }}</p>
-            <button v-if="busy && task" type="button" class="btn btn-secondary" @click="pause">{{ t('videoGen.pause') }}</button>
+            <button v-if="busy && task" type="button" class="btn btn-secondary" @click="pause">{{ loadingContent ? t('videoGen.stopLoading') : t('videoGen.pause') }}</button>
             <button v-if="task?.status === 'pending' && !busy" type="button" class="btn btn-primary" @click="resume">{{ t('videoGen.resume') }}</button>
             <p v-if="task?.status === 'pending'" class="text-xs text-gray-500">{{ t('videoGen.pauseHint') }}</p>
           </div>
@@ -93,7 +94,7 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import { useAuthStore } from '@/stores/auth'
 import { keysAPI } from '@/api/keys'
 import { buildGatewayUrl } from '@/api/url'
-import { createVideo, fetchVideoContent, getVideoTask, listVideoModels, readVideoReference, videoPollDelay, type VideoTask } from '@/api/videoGateway'
+import { createVideo, fetchVideoContent, getVideoTask, listVideoModels, normalizeVideoTask, readVideoReference, videoPollDelay, type VideoTask } from '@/api/videoGateway'
 import type { ApiKey } from '@/types'
 
 const { t } = useI18n()
@@ -115,12 +116,19 @@ const task = ref<VideoTask | null>(null)
 const videoURL = ref('')
 const error = ref('')
 const busy = ref(false)
+const loadingContent = ref(false)
+const downloadBytes = ref(0)
+const downloadTotal = ref<number | undefined>()
 const durations = computed(() => model.value === 'muse-video' ? [5, 6, 8, 10] : [5, 6, 8, 10, 15])
 const canSubmit = computed(() => !!selectedKey.value && !!prompt.value.trim() && models.value.includes(model.value)
   && !busy.value && !readingReference.value && !loadingModels.value && task.value?.status !== 'pending')
-const statusLabel = computed(() => !task.value ? t('videoGen.submitting') : task.value.status === 'done'
+const statusLabel = computed(() => loadingContent.value ? t('videoGen.loadingCompletedVideo') : !task.value ? t('videoGen.submitting') : task.value.status === 'done'
   ? t('videoGen.completed') : task.value.status === 'failed' ? t('videoGen.failed') : busy.value
     ? t('videoGen.processing') : t('videoGen.paused'))
+const downloadProgressLabel = computed(() => t(downloadTotal.value ? 'videoGen.downloadProgress' : 'videoGen.downloadReceived', {
+  received: (downloadBytes.value / 1024 / 1024).toFixed(1),
+  total: ((downloadTotal.value || 0) / 1024 / 1024).toFixed(1),
+}))
 const apiExample = computed(() => `POST ${buildGatewayUrl('/v1/videos')}\nAuthorization: Bearer <YOUR_SUB2API_KEY>\nContent-Type: application/json\n\n${JSON.stringify({ model: model.value || 'muse-video', prompt: 'A cat walking through a garden', duration: duration.value, aspect_ratio: aspectRatio.value }, null, 2)}\n\nGET /v1/videos/<task_id>\nGET /v1/videos/<task_id>/content`)
 
 let disposed = false
@@ -130,6 +138,7 @@ let modelLoad = 0
 let referenceLoad = 0
 let controller: AbortController | null = null
 let modelController: AbortController | null = null
+let recoveryAttempted = false
 
 function clearVideo(): void {
   if (videoURL.value) URL.revokeObjectURL(videoURL.value)
@@ -140,6 +149,7 @@ function pause(): void {
   controller?.abort()
   controller = null
   busy.value = false
+  loadingContent.value = false
 }
 function resetTask(): void {
   pause()
@@ -186,6 +196,7 @@ async function loadKeys(): Promise<void> {
     keys.value = items.filter(key => key.status === 'active' && ['grok', 'composite'].includes(key.group?.platform || '')
       && (!key.expires_at || Date.parse(key.expires_at) > Date.now()) && !(key.quota > 0 && key.quota_used >= key.quota))
     if (!keys.value.some(key => key.id === selectedKeyID.value)) selectedKeyID.value = keys.value[0]?.id ?? ''
+    restoreTask()
   } catch (cause) {
     if (!disposed && token === keyLoad) { keys.value = []; error.value = message(cause) }
   } finally { if (token === keyLoad) loadingKeys.value = false }
@@ -210,12 +221,39 @@ async function loadModels(): Promise<void> {
     if (!disposed && token === modelLoad) modelError.value = message(cause)
   } finally { if (token === modelLoad) loadingModels.value = false }
 }
-function message(cause: unknown): string { return cause instanceof Error ? cause.message : t('videoGen.requestFailed') }
+function restoreTask(): void {
+  if (recoveryAttempted) return
+  recoveryAttempted = true
+  const query = new URLSearchParams(window.location.search)
+  if (!query.has('task_id') && !query.has('key_id')) return
+  const rawKey = query.get('key_id') || ''
+  const keyID = Number(rawKey)
+  try {
+    if (query.getAll('task_id').length !== 1 || query.getAll('key_id').length !== 1
+      || !/^[1-9]\d*$/.test(rawKey) || !Number.isSafeInteger(keyID)
+      || !keys.value.some(key => key.id === keyID)) throw new Error('Invalid recovery link')
+    const recovered = normalizeVideoTask({ id: query.get('task_id'), status: 'pending' })
+    selectedKeyID.value = keyID
+    resetTask()
+    task.value = recovered
+    void run(false)
+  } catch { error.value = t('videoGen.recoveryError') }
+}
+function message(cause: unknown): string {
+  return cause instanceof Error ? cause.message.startsWith('videoGen.') ? t(cause.message) : cause.message : t('videoGen.requestFailed')
+}
 async function observe(key: string, id: string, token: number, current: AbortController): Promise<void> {
   const deadline = Date.now() + 15 * 60 * 1000
   while (!disposed && token === session && !current.signal.aborted) {
     if (task.value?.status === 'done') {
-      const blob = await fetchVideoContent(key, id, current.signal)
+      loadingContent.value = true
+      downloadBytes.value = 0
+      downloadTotal.value = undefined
+      const blob = await fetchVideoContent(key, id, current.signal, progress => {
+        if (disposed || token !== session || current.signal.aborted) return
+        downloadBytes.value = progress.received
+        downloadTotal.value = progress.total
+      })
       if (disposed || token !== session || current.signal.aborted) return
       clearVideo()
       videoURL.value = URL.createObjectURL(blob)
@@ -252,7 +290,7 @@ async function run(create: boolean): Promise<void> {
     await observe(key.key, task.value!.id, token, current)
   } catch (cause) {
     if (!disposed && token === session && !current.signal.aborted) error.value = message(cause)
-  } finally { if (token === session) busy.value = false }
+  } finally { if (token === session) { busy.value = false; loadingContent.value = false } }
 }
 function submit(): void { void run(true) }
 function resume(): void { void run(false) }

@@ -9,7 +9,8 @@ const mocks = vi.hoisted(() => ({
 const auth = reactive({ isAuthenticated: true, user: { id: 1 } })
 vi.mock('@/api/keys', () => ({ keysAPI: { list: mocks.listKeys } }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => auth }))
-vi.mock('@/api/videoGateway', () => ({
+vi.mock('@/api/videoGateway', async importOriginal => ({
+  ...await importOriginal<typeof import('@/api/videoGateway')>(),
   createVideo: mocks.create, getVideoTask: mocks.getTask, fetchVideoContent: mocks.content,
   listVideoModels: mocks.listModels, videoPollDelay: mocks.delay, readVideoReference: mocks.readReference,
 }))
@@ -38,6 +39,7 @@ async function submit(wrapper: ReturnType<typeof mount>) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  window.history.replaceState({}, '', '/video-gen')
   auth.isAuthenticated = true
   auth.user.id = 1
   mocks.listKeys.mockResolvedValue({ items: [apiKey(1), apiKey(2)], pages: 1 })
@@ -94,9 +96,66 @@ describe('VideoGenView', () => {
       model: 'muse-video', prompt: 'A cat in the garden', duration: 6, aspect_ratio: '16:9',
     }, expect.any(AbortSignal))
     expect(mocks.getTask).toHaveBeenCalledWith('sk-user-1', 'task_one', expect.any(AbortSignal))
-    expect(mocks.content).toHaveBeenCalledWith('sk-user-1', 'task_one', expect.any(AbortSignal))
+    expect(mocks.content).toHaveBeenCalledWith('sk-user-1', 'task_one', expect.any(AbortSignal), expect.any(Function))
     expect(wrapper.get('video').attributes('src')).toBe('blob:protected-video')
     expect(wrapper.html()).not.toContain('sk-user-1')
+  })
+  it('distinguishes loading a completed video from generating and allows stopping the download', async () => {
+    const transfer = deferred<Blob>()
+    mocks.content.mockReturnValue(transfer.promise)
+    const wrapper = mountView()
+    await flushPromises()
+    await submit(wrapper)
+    expect(wrapper.text()).toContain('videoGen.loadingCompletedVideo')
+    expect(wrapper.get('button[type="submit"]').text()).toBe('videoGen.loadingVideo')
+    expect(wrapper.find('video').exists()).toBe(false)
+    const signal = mocks.content.mock.calls[0][2] as AbortSignal
+    const stop = wrapper.findAll('button').find(button => button.text() === 'videoGen.stopLoading')!
+    await stop.trigger('click')
+    expect(signal.aborted).toBe(true)
+    expect(wrapper.text()).toContain('videoGen.loadVideo')
+    transfer.resolve(new Blob(['late'], { type: 'video/mp4' }))
+    await flushPromises()
+    expect(wrapper.find('video').exists()).toBe(false)
+    expect(mocks.create).toHaveBeenCalledOnce()
+  })
+  it('retains a completed task after a download timeout and retries only the content request', async () => {
+    mocks.content.mockRejectedValueOnce(new Error('videoGen.downloadTimeout'))
+    const wrapper = mountView()
+    await flushPromises()
+    await submit(wrapper)
+    expect(wrapper.get('[role="alert"]').text()).toBe('videoGen.downloadTimeout')
+    expect(wrapper.text()).toContain('task_one')
+    const load = wrapper.findAll('button').find(button => button.text() === 'videoGen.loadVideo')!
+    await load.trigger('click')
+    await flushPromises()
+    expect(mocks.content).toHaveBeenCalledTimes(2)
+    expect(mocks.getTask).toHaveBeenCalledOnce()
+    expect(mocks.create).toHaveBeenCalledOnce()
+    expect(wrapper.find('video').exists()).toBe(true)
+  })
+  it('restores an existing task with a currently available key without submitting a generation', async () => {
+    window.history.replaceState({}, '', '/video-gen?task_id=task_one&key_id=2')
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.get('#video-key').element).toHaveProperty('value', '2')
+    expect(mocks.getTask).toHaveBeenCalledWith('sk-user-2', 'task_one', expect.any(AbortSignal))
+    expect(mocks.content).toHaveBeenCalledWith('sk-user-2', 'task_one', expect.any(AbortSignal), expect.any(Function))
+    expect(mocks.create).not.toHaveBeenCalled()
+    expect(wrapper.find('video').exists()).toBe(true)
+    expect(window.location.search).not.toContain('sk-user')
+  })
+  it.each([
+    '?task_id=task_one&key_id=42', '?task_id=../../admin&key_id=1',
+    '?task_id=task_one', '?key_id=1', '?task_id=task_one&task_id=other&key_id=1',
+  ])('rejects an unavailable key or invalid recovery link %s without requesting the task', async query => {
+    window.history.replaceState({}, '', '/video-gen' + query)
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toBe('videoGen.recoveryError')
+    expect(mocks.create).not.toHaveBeenCalled()
+    expect(mocks.getTask).not.toHaveBeenCalled()
+    expect(mocks.content).not.toHaveBeenCalled()
   })
   it('does not duplicate submission while create is pending', async () => {
     const accepted = deferred<{ id: string; status: string; progress: number }>()

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { buildGatewayUrl } from '../url'
-import { createVideo, fetchVideoContent, getVideoTask, listVideoModels, normalizeVideoTask, readVideoReference, videoPollDelay } from '../videoGateway'
+import { createVideo, fetchVideoContent, getVideoTask, listVideoModels, normalizeVideoTask, readVideoReference, videoPollDelay, VIDEO_CONTENT_TIMEOUT_MS } from '../videoGateway'
 
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } }) }
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); localStorage.clear() })
@@ -71,6 +71,60 @@ describe('video task protocol', () => {
 })
 
 describe('protected video download', () => {
+  it('reports received bytes while buffering a complete authenticated video', async () => {
+    const body = new ReadableStream({ start(controller) {
+      controller.enqueue(new Uint8Array([1, 2]))
+      controller.enqueue(new Uint8Array([3]))
+      controller.close()
+    } })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { headers: { 'Content-Type': 'video/mp4', 'Content-Length': '3' } })))
+    const progress = vi.fn()
+    expect((await fetchVideoContent('key', 'one', undefined, progress)).size).toBe(3)
+    expect(progress.mock.calls.map(([value]) => value)).toEqual([
+      { received: 0, total: 3 }, { received: 2, total: 3 }, { received: 3, total: 3 },
+    ])
+  })
+  it('times out even when the request never returns headers', async () => {
+    vi.useFakeTimers()
+    const fetcher = vi.fn().mockReturnValue(new Promise(() => {}))
+    vi.stubGlobal('fetch', fetcher)
+    const pending = fetchVideoContent('key', 'one')
+    const rejected = expect(pending).rejects.toThrow('videoGen.downloadTimeout')
+    await vi.advanceTimersByTimeAsync(VIDEO_CONTENT_TIMEOUT_MS)
+    await rejected
+    expect(fetcher.mock.calls[0][1].signal.aborted).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+  it('times out a stalled body without waiting for its underlying cancellation', async () => {
+    vi.useFakeTimers()
+    const cancel = vi.fn().mockReturnValue(new Promise(() => {}))
+    const body = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1])) }, cancel })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { headers: { 'Content-Type': 'video/mp4' } })))
+    const pending = fetchVideoContent('key', 'one')
+    const rejected = expect(pending).rejects.toThrow('videoGen.downloadTimeout')
+    await vi.advanceTimersByTimeAsync(VIDEO_CONTENT_TIMEOUT_MS)
+    await rejected
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+  it('cancels a stalled body promptly and removes its timeout', async () => {
+    vi.useFakeTimers()
+    const cancel = vi.fn().mockReturnValue(new Promise(() => {}))
+    const body = new ReadableStream({ cancel })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { headers: { 'Content-Type': 'video/mp4' } })))
+    const controller = new AbortController()
+    const pending = fetchVideoContent('key', 'one', controller.signal)
+    const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.advanceTimersByTimeAsync(0)
+    controller.abort()
+    await rejected
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+  it('rejects a truncated video instead of creating an unusable preview', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('short', { headers: { 'Content-Type': 'video/mp4', 'Content-Length': '10' } })))
+    await expect(fetchVideoContent('key', 'one')).rejects.toThrow('videoGen.downloadIncomplete')
+  })
   it('downloads bytes through the authenticated gateway path, ignoring upstream media links', async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'video/mp4' } }))
     vi.stubGlobal('fetch', fetcher)

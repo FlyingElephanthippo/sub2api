@@ -19,6 +19,8 @@ export interface VideoGenerateRequest {
 const MAX_REFERENCE_BYTES = 10 * 1024 * 1024
 const MAX_VIDEO_BYTES = 200 * 1024 * 1024
 const VIDEO_ID = /^[a-zA-Z0-9_-]{1,200}$/
+export const VIDEO_CONTENT_TIMEOUT_MS = 180_000
+export interface VideoContentProgress { received: number; total?: number }
 
 export function isVideoModel(id: string): boolean {
   return id === 'muse-video' || /^grok-imagine-video(?:[-.][\w.-]+)?$/i.test(id)
@@ -89,30 +91,57 @@ export async function getVideoTask(key: string, id: string, signal?: AbortSignal
   return normalizeVideoTask(await response.json(), id)
 }
 
-export async function fetchVideoContent(key: string, id: string, signal?: AbortSignal): Promise<Blob> {
+export async function fetchVideoContent(key: string, id: string, signal?: AbortSignal, onProgress?: (progress: VideoContentProgress) => void): Promise<Blob> {
   // Always build the protected gateway path locally. Never fetch a URL returned by an upstream.
-  const response = await gatewayFetch(`/v1/videos/${encodeURIComponent(taskID(id))}/content`, key, { signal })
-  const mime = (response.headers.get('content-type') || '').split(';')[0]?.trim()
-  if (!mime?.startsWith('video/')) throw new Error('Invalid video content type')
-  if (Number(response.headers.get('content-length')) > MAX_VIDEO_BYTES) throw new Error('Video is too large to preview')
-  if (!response.body) throw new Error('Missing video content')
-  const reader = response.body.getReader()
-  const chunks: Uint8Array[] = []
-  let size = 0
+  const path = `/v1/videos/${encodeURIComponent(taskID(id))}/content`
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+  const current = new AbortController()
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+  let rejectInterrupted!: (reason: Error) => void
+  const interrupted = new Promise<never>((_, reject) => { rejectInterrupted = reject })
+  const interrupt = (reason: Error) => {
+    rejectInterrupted(reason)
+    current.abort()
+    // Cancellation of an underlying stream can itself stall. Do not await it.
+    void reader?.cancel().catch(() => {})
+  }
+  const onAbort = () => interrupt(new DOMException('Aborted', 'AbortError'))
+  signal?.addEventListener('abort', onAbort, { once: true })
+  const timer = setTimeout(() => interrupt(new Error('videoGen.downloadTimeout')), VIDEO_CONTENT_TIMEOUT_MS)
+  const download = async (): Promise<Blob> => {
+    const response = await gatewayFetch(path, key, { signal: current.signal })
+    const mime = (response.headers.get('content-type') || '').split(';')[0]?.trim()
+    if (!mime?.startsWith('video/')) throw new Error('Invalid video content type')
+    const length = Number(response.headers.get('content-length'))
+    if (length > MAX_VIDEO_BYTES) throw new Error('Video is too large to preview')
+    const total = Number.isFinite(length) && length > 0 ? length : undefined
+    if (!response.body) throw new Error('Missing video content')
+    reader = response.body.getReader()
+    const chunks: Uint8Array[] = []
+    let size = 0
+    onProgress?.({ received: 0, total })
+    try {
+      while (true) {
+        const item = await reader.read()
+        if (current.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+        if (item.done) break
+        size += item.value.byteLength
+        if (size > MAX_VIDEO_BYTES) throw new Error('Video is too large to preview')
+        chunks.push(item.value)
+        onProgress?.({ received: size, total })
+      }
+    } finally { reader.releaseLock() }
+    if (!size) throw new Error('Empty video content')
+    if (total && size !== total) throw new Error('videoGen.downloadIncomplete')
+    return new Blob(chunks as BlobPart[], { type: mime })
+  }
   try {
-    while (true) {
-      const item = await reader.read()
-      if (item.done) break
-      size += item.value.byteLength
-      if (size > MAX_VIDEO_BYTES) throw new Error('Video is too large to preview')
-      chunks.push(item.value)
-    }
-  } catch (error) {
-    await reader.cancel().catch(() => {})
-    throw error
-  } finally { reader.releaseLock() }
-  if (!size) throw new Error('Empty video content')
-  return new Blob(chunks as BlobPart[], { type: mime })
+    return await Promise.race([download(), interrupted])
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', onAbort)
+    current.abort()
+  }
 }
 
 export function videoPollDelay(signal: AbortSignal, ms = 3000): Promise<void> {
