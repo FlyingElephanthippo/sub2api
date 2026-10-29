@@ -213,6 +213,14 @@ func TestSecurityHeaders(t *testing.T) {
 		// Default policy should contain these elements
 		assert.Contains(t, csp, "default-src 'self'")
 		assert.Contains(t, csp, TencentCaptchaDomain)
+		var mediaSources []string
+		for _, directive := range strings.Split(csp, ";") {
+			fields := strings.Fields(directive)
+			if len(fields) > 0 && fields[0] == "media-src" {
+				mediaSources = append(mediaSources, fields[1:]...)
+			}
+		}
+		assert.Equal(t, []string{"'self'", "blob:"}, mediaSources)
 	})
 
 	t.Run("uses_default_policy_when_whitespace_only", func(t *testing.T) {
